@@ -11,6 +11,7 @@ import {
   getTriggerPattern,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  LITELLM_PROXY_URL,
   ONECLI_URL,
   POLL_INTERVAL,
   TELEGRAM_BOT_POOL,
@@ -203,13 +204,20 @@ interface ModelDirectives {
 }
 
 // Slash command patterns
-const MODEL_SLASH_RE = /\/model\s+(opus|sonnet|haiku)\b/i;
+// When LiteLLM is configured, accept any model name (e.g., /model gpt-4o, /model gemini-2.0-flash)
+// Otherwise only accept Anthropic aliases (opus/sonnet/haiku)
+const MODEL_SLUG = LITELLM_PROXY_URL
+  ? '[a-zA-Z0-9][a-zA-Z0-9._-]*'
+  : 'opus|sonnet|haiku';
+const MODEL_SLASH_RE = new RegExp(`\\/model\\s+(${MODEL_SLUG})\\b`, 'i');
 const DELEGATE_SLASH_RE = /\/delegate-models\b/i;
 
 // Natural language patterns for model selection
 // Matches: "use opus", "switch to haiku", "with opus", "respond with sonnet", "answer in opus"
-const MODEL_NL_RE =
-  /\b(?:use|switch\s+to|with|respond\s+(?:with|in|using)|answer\s+(?:with|in|using)|run\s+(?:with|in|on)|in)\s+(opus|sonnet|haiku)\b/i;
+const MODEL_NL_RE = new RegExp(
+  `\\b(?:use|switch\\s+to|with|respond\\s+(?:with|in|using)|answer\\s+(?:with|in|using)|run\\s+(?:with|in|on)|in)\\s+(${MODEL_SLUG})\\b`,
+  'i',
+);
 
 // Natural language patterns for model delegation
 // Matches: "use different models", "delegate models", "pick the best model", "choose models for subtasks"
@@ -641,9 +649,7 @@ async function runAgent(
   try {
     // Resolve model: message directive > per-group config > global default
     const resolvedModel =
-      directives.model ||
-      group.containerConfig?.model ||
-      DEFAULT_MODEL;
+      directives.model || group.containerConfig?.model || DEFAULT_MODEL;
     const resolvedFallback =
       group.containerConfig?.fallbackModel || DEFAULT_FALLBACK_MODEL;
     const allowDelegation =

@@ -71,6 +71,13 @@ export const MAX_SLOTS_PER_GROUP = Math.max(
   parseInt(process.env.MAX_SLOTS_PER_GROUP || '5', 10) || 5,
 );
 
+// LiteLLM proxy URL — when set, containers route LLM traffic through LiteLLM
+// for multi-model support. Format: http://host:port (no trailing slash)
+export const LITELLM_PROXY_URL =
+  process.env.LITELLM_PROXY_URL || envConfig.LITELLM_PROXY_URL || '';
+export const LITELLM_API_KEY =
+  process.env.LITELLM_API_KEY || envConfig.LITELLM_API_KEY || '';
+
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -92,7 +99,9 @@ export const TRIGGER_PATTERN = buildTriggerPattern(DEFAULT_TRIGGER);
 export const DEFAULT_MODEL =
   process.env.DEFAULT_MODEL || envConfig.DEFAULT_MODEL || 'sonnet';
 export const DEFAULT_FALLBACK_MODEL =
-  process.env.DEFAULT_FALLBACK_MODEL || envConfig.DEFAULT_FALLBACK_MODEL || undefined;
+  process.env.DEFAULT_FALLBACK_MODEL ||
+  envConfig.DEFAULT_FALLBACK_MODEL ||
+  undefined;
 
 export const TELEGRAM_BOT_POOL = (
   process.env.TELEGRAM_BOT_POOL ||

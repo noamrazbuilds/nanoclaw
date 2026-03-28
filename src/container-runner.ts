@@ -13,6 +13,8 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  LITELLM_API_KEY,
+  LITELLM_PROXY_URL,
   ONECLI_URL,
   TIMEZONE,
 } from './config.js';
@@ -282,6 +284,15 @@ async function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // LiteLLM proxy: when configured, route LLM traffic through the local proxy
+  // for multi-model support. The Agent SDK reads these env vars automatically.
+  if (LITELLM_PROXY_URL) {
+    args.push('-e', `ANTHROPIC_BASE_URL=${LITELLM_PROXY_URL}`);
+    if (LITELLM_API_KEY) {
+      args.push('-e', `ANTHROPIC_AUTH_TOKEN=${LITELLM_API_KEY}`);
+    }
+  }
 
   // OneCLI gateway handles credential injection — containers never see real secrets.
   // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
