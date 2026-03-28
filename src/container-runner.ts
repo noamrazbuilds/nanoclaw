@@ -44,6 +44,12 @@ export interface ContainerInput {
   assistantName?: string;
   script?: string;
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
+  model?: string;
+  fallbackModel?: string;
+  allowModelDelegation?: boolean;
+  isOverflow?: boolean;
+  systemHint?: string;
+  slotId?: string;
 }
 
 export interface ContainerOutput {
@@ -62,6 +68,7 @@ interface VolumeMount {
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
+  slotId?: string,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
@@ -96,6 +103,17 @@ function buildVolumeMounts(
       containerPath: '/workspace/group',
       readonly: false,
     });
+
+    // Global memory directory (read-write overlay on top of the read-only
+    // project mount). This lets the main agent write to global memory.
+    const globalDir = path.join(GROUPS_DIR, 'global');
+    if (fs.existsSync(globalDir)) {
+      mounts.push({
+        hostPath: globalDir,
+        containerPath: '/workspace/global',
+        readonly: false,
+      });
+    }
   } else {
     // Other groups only get their own folder
     mounts.push({
@@ -104,26 +122,23 @@ function buildVolumeMounts(
       readonly: false,
     });
 
-    // Global memory directory (read-only for non-main)
-    // Only directory mounts are supported, not file mounts
+    // Global memory directory (read-write for cross-channel preference sync)
     const globalDir = path.join(GROUPS_DIR, 'global');
     if (fs.existsSync(globalDir)) {
       mounts.push({
         hostPath: globalDir,
         containerPath: '/workspace/global',
-        readonly: true,
+        readonly: false,
       });
     }
   }
 
   // Per-group Claude sessions directory (isolated from other groups)
-  // Each group gets their own .claude/ to prevent cross-group session access
-  const groupSessionsDir = path.join(
-    DATA_DIR,
-    'sessions',
-    group.folder,
-    '.claude',
-  );
+  // Each group gets their own .claude/ to prevent cross-group session access.
+  // Slots get a separate subdirectory to avoid session conflicts.
+  const groupSessionsDir = slotId
+    ? path.join(DATA_DIR, 'sessions', group.folder, 'slots', slotId, '.claude')
+    : path.join(DATA_DIR, 'sessions', group.folder, '.claude');
   fs.mkdirSync(groupSessionsDir, { recursive: true });
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
   if (!fs.existsSync(settingsFile)) {
@@ -171,12 +186,35 @@ function buildVolumeMounts(
   const groupIpcDir = resolveGroupIpcPath(group.folder);
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
-  mounts.push({
-    hostPath: groupIpcDir,
-    containerPath: '/workspace/ipc',
-    readonly: false,
-  });
+
+  if (slotId) {
+    // Slot containers get their own IPC input dir but share the group's
+    // outbound messages/tasks dirs (so send_message still works)
+    const slotInputDir = path.join(groupIpcDir, 'slots', slotId, 'input');
+    fs.mkdirSync(slotInputDir, { recursive: true });
+    // Mount the slot-specific IPC dir as a combined view:
+    // /workspace/ipc/input → slot-specific input
+    // /workspace/ipc/messages → shared outbound
+    // /workspace/ipc/tasks → shared tasks
+    mounts.push({
+      hostPath: groupIpcDir,
+      containerPath: '/workspace/ipc',
+      readonly: false,
+    });
+    // Override just the input dir with the slot-specific one
+    mounts.push({
+      hostPath: slotInputDir,
+      containerPath: '/workspace/ipc/input',
+      readonly: false,
+    });
+  } else {
+    fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+    mounts.push({
+      hostPath: groupIpcDir,
+      containerPath: '/workspace/ipc',
+      readonly: false,
+    });
+  }
 
   // Google Workspace CLI credentials (read-only)
   // gws uses ~/.config/gws/ for OAuth tokens and client config
@@ -297,7 +335,7 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  const mounts = buildVolumeMounts(group, input.isMain);
+  const mounts = buildVolumeMounts(group, input.isMain, input.slotId);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   // Main group uses the default OneCLI agent; others use their own agent.

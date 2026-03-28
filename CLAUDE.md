@@ -2,6 +2,10 @@
 
 Personal Claude assistant. See [README.md](README.md) for philosophy and setup. See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for architecture decisions.
 
+## Library Documentation
+
+When working with third-party libraries or frameworks, use the Context7 MCP tools to fetch current documentation before writing code. This ensures you use up-to-date APIs rather than relying on potentially outdated knowledge.
+
 ## Quick Context
 
 Single Node.js process with skill-based channel system. Channels (WhatsApp, Telegram, Slack, Discord, Gmail) are skills that self-register at startup. Messages route to Claude Agent SDK running in containers (Linux VMs). Each group has isolated filesystem and memory.

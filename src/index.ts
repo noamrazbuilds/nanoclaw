@@ -5,12 +5,15 @@ import { OneCLI } from '@onecli-sh/sdk';
 
 import {
   ASSISTANT_NAME,
+  DEFAULT_FALLBACK_MODEL,
+  DEFAULT_MODEL,
   DEFAULT_TRIGGER,
   getTriggerPattern,
   GROUPS_DIR,
   IDLE_TIMEOUT,
   ONECLI_URL,
   POLL_INTERVAL,
+  TELEGRAM_BOT_POOL,
   TIMEZONE,
 } from './config.js';
 import './channels/index.js';
@@ -63,6 +66,7 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { parseImageReferences } from './image.js';
 import { logger } from './logger.js';
+import { parseSlotPrefix, slotSessionKey } from './slots.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -82,13 +86,13 @@ function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
   if (group.isMain) return;
   const identifier = group.folder.toLowerCase().replace(/_/g, '-');
   onecli.ensureAgent({ name: group.name, identifier }).then(
-    (res) => {
+    (res: any) => {
       logger.info(
         { jid, identifier, created: res.created },
         'OneCLI agent ensured',
       );
     },
-    (err) => {
+    (err: any) => {
       logger.debug(
         { jid, identifier, err: String(err) },
         'OneCLI agent ensure skipped',
@@ -191,6 +195,66 @@ export function _setRegisteredGroups(
   registeredGroups = groups;
 }
 
+const VALID_MODELS = new Set(['opus', 'sonnet', 'haiku']);
+
+interface ModelDirectives {
+  model?: string;
+  delegateModels: boolean;
+}
+
+// Slash command patterns
+const MODEL_SLASH_RE = /\/model\s+(opus|sonnet|haiku)\b/i;
+const DELEGATE_SLASH_RE = /\/delegate-models\b/i;
+
+// Natural language patterns for model selection
+// Matches: "use opus", "switch to haiku", "with opus", "respond with sonnet", "answer in opus"
+const MODEL_NL_RE =
+  /\b(?:use|switch\s+to|with|respond\s+(?:with|in|using)|answer\s+(?:with|in|using)|run\s+(?:with|in|on)|in)\s+(opus|sonnet|haiku)\b/i;
+
+// Natural language patterns for model delegation
+// Matches: "use different models", "delegate models", "pick the best model", "choose models for subtasks"
+const DELEGATE_NL_RE =
+  /\b(?:use\s+different\s+models|delegate\s+models|pick\s+(?:the\s+)?(?:best|right)\s+model|choose\s+models?\s+(?:for|per)|mix\s+models|multi[- ]?model)\b/i;
+
+/**
+ * Scan messages for model directives — slash commands or natural language.
+ * Directives are stripped from message content in-place.
+ */
+function parseModelDirectives(
+  messages: import('./types.js').NewMessage[],
+): ModelDirectives {
+  let model: string | undefined;
+  let delegateModels = false;
+
+  for (const msg of messages) {
+    // Slash commands (take priority)
+    const slashModel = msg.content.match(MODEL_SLASH_RE);
+    if (slashModel) {
+      model = slashModel[1].toLowerCase();
+      msg.content = msg.content.replace(slashModel[0], '').trim();
+    }
+    if (DELEGATE_SLASH_RE.test(msg.content)) {
+      delegateModels = true;
+      msg.content = msg.content.replace(DELEGATE_SLASH_RE, '').trim();
+    }
+
+    // Natural language (only if slash command didn't match)
+    if (!model) {
+      const nlModel = msg.content.match(MODEL_NL_RE);
+      if (nlModel) {
+        model = nlModel[1].toLowerCase();
+        msg.content = msg.content.replace(nlModel[0], '').trim();
+      }
+    }
+    if (!delegateModels && DELEGATE_NL_RE.test(msg.content)) {
+      delegateModels = true;
+      // Don't strip NL delegation — it's often part of the actual instruction
+    }
+  }
+
+  return { model, delegateModels };
+}
+
 /**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
@@ -227,6 +291,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     );
     if (!hasTrigger) return true;
   }
+
+  // Parse /model and /delegate-models directives (strips them from content)
+  const directives = parseModelDirectives(missedMessages);
 
   const prompt = formatMessages(missedMessages, TIMEZONE);
   const imageAttachments = parseImageReferences(missedMessages);
@@ -266,6 +333,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     prompt,
     chatJid,
     imageAttachments,
+    directives,
     async (result) => {
       // Streaming output callback — called for each agent result
       if (result.result) {
@@ -320,15 +388,217 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   return true;
 }
 
+/**
+ * Process messages for a group via an overflow container.
+ * Spawned when the primary container is busy, so the user gets a prompt response.
+ * Uses a fresh session (no resume) and exits after a single turn.
+ */
+async function processOverflowMessages(chatJid: string): Promise<void> {
+  const group = registeredGroups[chatJid];
+  if (!group) return;
+
+  const channel = findChannel(channels, chatJid);
+  if (!channel) return;
+
+  const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
+  const messages = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
+  if (messages.length === 0) return;
+
+  const directives = parseModelDirectives(messages);
+  const prompt = formatMessages(messages, TIMEZONE);
+  const imageAttachments = parseImageReferences(messages);
+
+  // Advance cursor so the primary container won't re-process these
+  lastAgentTimestamp[chatJid] = messages[messages.length - 1].timestamp;
+  saveState();
+
+  logger.info(
+    { group: group.name, messageCount: messages.length },
+    'Processing overflow messages',
+  );
+
+  await channel.setTyping?.(chatJid, true);
+
+  await runAgent(
+    group,
+    prompt,
+    chatJid,
+    imageAttachments,
+    directives,
+    async (result) => {
+      if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        if (text) await channel.sendMessage(chatJid, text);
+      }
+    },
+    { isOverflow: true },
+  );
+
+  await channel.setTyping?.(chatJid, false);
+}
+
+/**
+ * Process messages for a slot container.
+ * Slots are independent, long-running containers with their own sessions.
+ * They linger for follow-up IPC messages just like the primary container.
+ */
+async function processSlotMessages(
+  chatJid: string,
+  slotId: string,
+): Promise<void> {
+  const group = registeredGroups[chatJid];
+  if (!group) return;
+
+  const channel = findChannel(channels, chatJid);
+  if (!channel) return;
+
+  const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
+  const messages = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
+  if (messages.length === 0) return;
+
+  // Find the slot-prefixed messages and strip the prefix for the prompt
+  // (the prefix was already parsed in the message loop, but DB has raw content)
+  const directives = parseModelDirectives(messages);
+  const prompt = formatMessages(messages, TIMEZONE);
+  const imageAttachments = parseImageReferences(messages);
+
+  const sessKey = slotSessionKey(group.folder, slotId);
+
+  // Advance cursor
+  lastAgentTimestamp[chatJid] = messages[messages.length - 1].timestamp;
+  saveState();
+
+  logger.info(
+    { group: group.name, slotId, messageCount: messages.length },
+    'Processing slot messages',
+  );
+
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const resetIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      logger.debug({ group: group.name, slotId }, 'Slot idle timeout, closing');
+      queue.closeSlot(chatJid, slotId);
+    }, IDLE_TIMEOUT);
+  };
+
+  await channel.setTyping?.(chatJid, true);
+
+  const isMain = group.isMain === true;
+  const sessionId = sessions[sessKey];
+
+  // Resolve model
+  const resolvedModel =
+    directives.model || group.containerConfig?.model || DEFAULT_MODEL;
+  const resolvedFallback =
+    group.containerConfig?.fallbackModel || DEFAULT_FALLBACK_MODEL;
+  const allowDelegation =
+    directives.delegateModels ||
+    group.containerConfig?.allowModelDelegation === true;
+
+  // Update snapshots
+  const tasks = getAllTasks();
+  writeTasksSnapshot(
+    group.folder,
+    isMain,
+    tasks.map((t) => ({
+      id: t.id,
+      groupFolder: t.group_folder,
+      prompt: t.prompt,
+      script: t.script || undefined,
+      schedule_type: t.schedule_type,
+      schedule_value: t.schedule_value,
+      status: t.status,
+      next_run: t.next_run,
+    })),
+  );
+  const availableGroups = getAvailableGroups();
+  writeGroupsSnapshot(
+    group.folder,
+    isMain,
+    availableGroups,
+    new Set(Object.keys(registeredGroups)),
+  );
+
+  try {
+    const output = await runContainerAgent(
+      group,
+      {
+        prompt,
+        sessionId,
+        groupFolder: group.folder,
+        chatJid,
+        isMain,
+        assistantName: ASSISTANT_NAME,
+        model: resolvedModel,
+        ...(resolvedFallback && { fallbackModel: resolvedFallback }),
+        ...(allowDelegation && { allowModelDelegation: true }),
+        ...(imageAttachments.length > 0 && { imageAttachments }),
+        slotId,
+        systemHint: `You are running in task slot "${slotId}". The user addresses this slot with #${slotId}. Stay focused on the task assigned to this slot.`,
+      },
+      (proc, containerName) =>
+        queue.registerSlotProcess(
+          chatJid,
+          slotId,
+          proc,
+          containerName,
+          group.folder,
+        ),
+      async (result) => {
+        if (result.newSessionId) {
+          sessions[sessKey] = result.newSessionId;
+          setSession(sessKey, result.newSessionId);
+        }
+        if (result.result) {
+          const raw =
+            typeof result.result === 'string'
+              ? result.result
+              : JSON.stringify(result.result);
+          const text = raw
+            .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+            .trim();
+          if (text) {
+            // Prefix slot responses so the user knows which slot replied
+            const prefixed = `*[#${slotId}]*\n${text}`;
+            await channel.sendMessage(chatJid, prefixed);
+          }
+          resetIdleTimer();
+        }
+        if (result.status === 'success') {
+          queue.notifySlotIdle(chatJid, slotId);
+        }
+      },
+    );
+
+    if (output.newSessionId) {
+      sessions[sessKey] = output.newSessionId;
+      setSession(sessKey, output.newSessionId);
+    }
+  } catch (err) {
+    logger.error({ group: group.name, slotId, err }, 'Slot agent error');
+  }
+
+  await channel.setTyping?.(chatJid, false);
+  if (idleTimer) clearTimeout(idleTimer);
+}
+
 async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
   imageAttachments: Array<{ relativePath: string; mediaType: string }>,
+  directives: ModelDirectives = { delegateModels: false },
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  overflowOpts?: { isOverflow: boolean },
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
-  const sessionId = sessions[group.folder];
+  const isOverflow = overflowOpts?.isOverflow === true;
+  const sessionId = isOverflow ? undefined : sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -357,9 +627,10 @@ async function runAgent(
   );
 
   // Wrap onOutput to track session ID from streamed results
+  // Overflow containers have throwaway sessions — don't save them
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
-        if (output.newSessionId) {
+        if (!isOverflow && output.newSessionId) {
           sessions[group.folder] = output.newSessionId;
           setSession(group.folder, output.newSessionId);
         }
@@ -368,6 +639,17 @@ async function runAgent(
     : undefined;
 
   try {
+    // Resolve model: message directive > per-group config > global default
+    const resolvedModel =
+      directives.model ||
+      group.containerConfig?.model ||
+      DEFAULT_MODEL;
+    const resolvedFallback =
+      group.containerConfig?.fallbackModel || DEFAULT_FALLBACK_MODEL;
+    const allowDelegation =
+      directives.delegateModels ||
+      group.containerConfig?.allowModelDelegation === true;
+
     const output = await runContainerAgent(
       group,
       {
@@ -377,7 +659,15 @@ async function runAgent(
         chatJid,
         isMain,
         assistantName: ASSISTANT_NAME,
+        model: resolvedModel,
+        ...(resolvedFallback && { fallbackModel: resolvedFallback }),
+        ...(allowDelegation && { allowModelDelegation: true }),
         ...(imageAttachments.length > 0 && { imageAttachments }),
+        ...(isOverflow && {
+          isOverflow: true,
+          systemHint:
+            'The user sent this while you were handling another request. Respond to this message specifically.',
+        }),
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
@@ -467,6 +757,103 @@ async function startMessageLoop(): Promise<void> {
             );
             if (!hasTrigger) continue;
           }
+
+          // ── Slot routing ──────────────────────────────────────
+          // Check the latest message for a slot prefix.
+          // Only main groups support slots (non-main groups use triggers).
+          const latestMsg = groupMessages[groupMessages.length - 1];
+          const slotParse = isMainGroup
+            ? parseSlotPrefix(latestMsg.content)
+            : { type: 'primary' as const };
+
+          if (slotParse.type === 'slot-list') {
+            // #slots — list active slots
+            const activeSlots = queue.getActiveSlots(chatJid);
+            if (activeSlots.length === 0) {
+              await channel.sendMessage(chatJid, 'No active task slots.');
+            } else {
+              const lines = activeSlots.map(
+                (s) =>
+                  `• *#${s.slotId}* — ${s.idleWaiting ? 'idle (waiting for input)' : 'busy'}`,
+              );
+              await channel.sendMessage(
+                chatJid,
+                `*Active task slots:*\n${lines.join('\n')}`,
+              );
+            }
+            lastAgentTimestamp[chatJid] = latestMsg.timestamp;
+            saveState();
+            continue;
+          }
+
+          if (slotParse.type === 'slot-close' && slotParse.slotId) {
+            // #N close — close a slot
+            const closed = queue.closeSlot(chatJid, slotParse.slotId);
+            if (closed) {
+              await channel.sendMessage(
+                chatJid,
+                `Slot *#${slotParse.slotId}* is shutting down.`,
+              );
+            } else {
+              await channel.sendMessage(
+                chatJid,
+                `Slot *#${slotParse.slotId}* is not active.`,
+              );
+              queue.removeSlot(chatJid, slotParse.slotId);
+            }
+            lastAgentTimestamp[chatJid] = latestMsg.timestamp;
+            saveState();
+            continue;
+          }
+
+          if (slotParse.type === 'slot-message' && slotParse.slotId) {
+            // #N message — route to slot container
+            const slotId = slotParse.slotId;
+
+            // Pull pending messages and format
+            const allPending = getMessagesSince(
+              chatJid,
+              lastAgentTimestamp[chatJid] || '',
+              ASSISTANT_NAME,
+            );
+            const messagesToSend =
+              allPending.length > 0 ? allPending : groupMessages;
+            const formatted = formatMessages(messagesToSend, TIMEZONE);
+
+            // Try piping to existing active slot first
+            if (queue.sendSlotMessage(chatJid, slotId, formatted)) {
+              logger.debug(
+                { chatJid, slotId, count: messagesToSend.length },
+                'Piped messages to slot container',
+              );
+              lastAgentTimestamp[chatJid] =
+                messagesToSend[messagesToSend.length - 1].timestamp;
+              saveState();
+              channel
+                .setTyping?.(chatJid, true)
+                ?.catch((err) =>
+                  logger.warn(
+                    { chatJid, err },
+                    'Failed to set typing indicator',
+                  ),
+                );
+            } else {
+              // No active slot container — spawn one
+              const routed = queue.routeToSlot(chatJid, slotId);
+              if (!routed) {
+                await channel.sendMessage(
+                  chatJid,
+                  `Cannot create slot *#${slotId}* — at capacity. Close an existing slot first with \`#<name> close\`.`,
+                );
+                lastAgentTimestamp[chatJid] = latestMsg.timestamp;
+                saveState();
+              }
+              // routeToSlot handles cursor advancement via processSlotMessages
+            }
+            continue;
+          }
+
+          // ── Primary container (no slot prefix) ────────────────
 
           // Pull all messages since lastAgentTimestamp so non-trigger
           // context that accumulated between triggers is included.
@@ -656,6 +1043,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Initialize Telegram bot pool for agent swarm support
+  if (TELEGRAM_BOT_POOL.length > 0) {
+    const { initBotPool } = await import('./channels/telegram.js');
+    await initBotPool(TELEGRAM_BOT_POOL);
+  }
+
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
@@ -711,6 +1104,8 @@ async function main(): Promise<void> {
     },
   });
   queue.setProcessMessagesFn(processGroupMessages);
+  queue.setOverflowFn(processOverflowMessages);
+  queue.setSlotProcessFn(processSlotMessages);
   recoverPendingMessages();
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');

@@ -2,8 +2,14 @@ import { ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
+import {
+  DATA_DIR,
+  MAX_CONCURRENT_CONTAINERS,
+  MAX_OVERFLOW_PER_GROUP,
+  MAX_SLOTS_PER_GROUP,
+} from './config.js';
 import { logger } from './logger.js';
+import { SlotState, slotIpcSubdir } from './slots.js';
 
 interface QueuedTask {
   id: string;
@@ -25,6 +31,8 @@ interface GroupState {
   containerName: string | null;
   groupFolder: string | null;
   retryCount: number;
+  overflowCount: number;
+  slots: Map<string, SlotState>;
 }
 
 export class GroupQueue {
@@ -49,15 +57,254 @@ export class GroupQueue {
         containerName: null,
         groupFolder: null,
         retryCount: 0,
+        overflowCount: 0,
+        slots: new Map(),
       };
       this.groups.set(groupJid, state);
     }
     return state;
   }
 
+  private overflowFn: ((groupJid: string) => Promise<void>) | null = null;
+
   setProcessMessagesFn(fn: (groupJid: string) => Promise<boolean>): void {
     this.processMessagesFn = fn;
   }
+
+  setOverflowFn(fn: (groupJid: string) => Promise<void>): void {
+    this.overflowFn = fn;
+  }
+
+  /**
+   * Check whether an overflow container should be spawned for this group.
+   * True when the primary container is busy (not idle-waiting), overflow cap
+   * isn't reached, and global concurrency has room.
+   */
+  shouldOverflow(groupJid: string): boolean {
+    const state = this.getGroup(groupJid);
+    return (
+      state.active &&
+      !state.idleWaiting &&
+      !state.isTaskContainer &&
+      state.overflowCount < MAX_OVERFLOW_PER_GROUP &&
+      this.activeCount < MAX_CONCURRENT_CONTAINERS &&
+      this.overflowFn !== null
+    );
+  }
+
+  /**
+   * Spawn an overflow container for a group whose primary is busy.
+   * Overflow containers don't own the group slot — they just borrow a
+   * global concurrency slot and decrement on completion.
+   */
+  runOverflow(groupJid: string): void {
+    if (this.shuttingDown || !this.overflowFn) return;
+
+    const state = this.getGroup(groupJid);
+    state.overflowCount++;
+    this.activeCount++;
+
+    logger.info(
+      { groupJid, overflowCount: state.overflowCount, activeCount: this.activeCount },
+      'Spawning overflow container',
+    );
+
+    this.overflowFn(groupJid)
+      .catch((err) => logger.error({ groupJid, err }, 'Overflow container error'))
+      .finally(() => {
+        state.overflowCount--;
+        this.activeCount--;
+        // Overflow doesn't own the group slot — just free the global slot
+        this.drainWaiting();
+      });
+  }
+
+  // ── Slot management ──────────────────────────────────────────────
+
+  private slotProcessFn:
+    | ((groupJid: string, slotId: string) => Promise<void>)
+    | null = null;
+
+  setSlotProcessFn(
+    fn: (groupJid: string, slotId: string) => Promise<void>,
+  ): void {
+    this.slotProcessFn = fn;
+  }
+
+  /** Get or create slot state for a group */
+  getSlot(groupJid: string, slotId: string): SlotState | undefined {
+    const state = this.getGroup(groupJid);
+    return state.slots.get(slotId);
+  }
+
+  /** List all active slots for a group */
+  getActiveSlots(groupJid: string): SlotState[] {
+    const state = this.getGroup(groupJid);
+    return Array.from(state.slots.values()).filter((s) => s.active);
+  }
+
+  /** Check whether a new slot can be created for this group */
+  canCreateSlot(groupJid: string): boolean {
+    const state = this.getGroup(groupJid);
+    return (
+      state.slots.size < MAX_SLOTS_PER_GROUP &&
+      this.activeCount < MAX_CONCURRENT_CONTAINERS &&
+      this.slotProcessFn !== null
+    );
+  }
+
+  /**
+   * Route a message to a slot. If the slot exists and has an active container,
+   * pipe via IPC. Otherwise spawn a new slot container.
+   * Returns true if routed, false if can't (concurrency limit).
+   */
+  routeToSlot(groupJid: string, slotId: string): boolean {
+    if (this.shuttingDown || !this.slotProcessFn) return false;
+
+    const state = this.getGroup(groupJid);
+    const slot = state.slots.get(slotId);
+
+    // Existing slot — try to pipe via IPC
+    if (slot?.active && slot.groupFolder) {
+      slot.idleWaiting = false;
+      const inputDir = path.join(
+        DATA_DIR,
+        'ipc',
+        slot.groupFolder,
+        slotIpcSubdir(slotId),
+      );
+      // IPC file will be written by the caller (index.ts) after formatting
+      // Just return true to indicate the slot exists and is active
+      return true;
+    }
+
+    // Need to create/restart the slot — check capacity
+    if (!this.canCreateSlot(groupJid) && !slot) {
+      logger.warn(
+        { groupJid, slotId, slotCount: state.slots.size, activeCount: this.activeCount },
+        'Cannot create slot: at capacity',
+      );
+      return false;
+    }
+
+    // Create or reactivate slot
+    const newSlot: SlotState = slot || {
+      slotId,
+      active: false,
+      idleWaiting: false,
+      process: null,
+      containerName: null,
+      groupFolder: null,
+      sessionKey: '',
+    };
+    if (!slot) state.slots.set(slotId, newSlot);
+
+    newSlot.active = true;
+    newSlot.idleWaiting = false;
+    this.activeCount++;
+
+    logger.info(
+      { groupJid, slotId, activeCount: this.activeCount },
+      'Spawning slot container',
+    );
+
+    this.slotProcessFn(groupJid, slotId)
+      .catch((err) =>
+        logger.error({ groupJid, slotId, err }, 'Slot container error'),
+      )
+      .finally(() => {
+        newSlot.active = false;
+        newSlot.process = null;
+        newSlot.containerName = null;
+        this.activeCount--;
+        this.drainWaiting();
+      });
+
+    return true;
+  }
+
+  /** Send a follow-up message to an active slot container via IPC */
+  sendSlotMessage(
+    groupJid: string,
+    slotId: string,
+    text: string,
+  ): boolean {
+    const state = this.getGroup(groupJid);
+    const slot = state.slots.get(slotId);
+    if (!slot?.active || !slot.groupFolder) return false;
+    slot.idleWaiting = false;
+
+    const inputDir = path.join(
+      DATA_DIR,
+      'ipc',
+      slot.groupFolder,
+      slotIpcSubdir(slotId),
+    );
+    try {
+      fs.mkdirSync(inputDir, { recursive: true });
+      const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
+      const filepath = path.join(inputDir, filename);
+      const tempPath = `${filepath}.tmp`;
+      fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
+      fs.renameSync(tempPath, filepath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Register a slot container process */
+  registerSlotProcess(
+    groupJid: string,
+    slotId: string,
+    proc: ChildProcess,
+    containerName: string,
+    groupFolder: string,
+  ): void {
+    const state = this.getGroup(groupJid);
+    const slot = state.slots.get(slotId);
+    if (slot) {
+      slot.process = proc;
+      slot.containerName = containerName;
+      slot.groupFolder = groupFolder;
+    }
+  }
+
+  /** Mark a slot container as idle-waiting */
+  notifySlotIdle(groupJid: string, slotId: string): void {
+    const state = this.getGroup(groupJid);
+    const slot = state.slots.get(slotId);
+    if (slot) slot.idleWaiting = true;
+  }
+
+  /** Close a slot's stdin to wind down the container */
+  closeSlot(groupJid: string, slotId: string): boolean {
+    const state = this.getGroup(groupJid);
+    const slot = state.slots.get(slotId);
+    if (!slot?.active || !slot.groupFolder) return false;
+
+    const inputDir = path.join(
+      DATA_DIR,
+      'ipc',
+      slot.groupFolder,
+      slotIpcSubdir(slotId),
+    );
+    try {
+      fs.mkdirSync(inputDir, { recursive: true });
+      fs.writeFileSync(path.join(inputDir, '_close'), '');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Remove a slot entirely (after it's been closed) */
+  removeSlot(groupJid: string, slotId: string): void {
+    const state = this.getGroup(groupJid);
+    state.slots.delete(slotId);
+  }
+
+  // ── End slot management ─────────────────────────────────────────
 
   enqueueMessageCheck(groupJid: string): void {
     if (this.shuttingDown) return;
@@ -65,8 +312,12 @@ export class GroupQueue {
     const state = this.getGroup(groupJid);
 
     if (state.active) {
+      if (this.shouldOverflow(groupJid)) {
+        this.runOverflow(groupJid);
+        return;
+      }
       state.pendingMessages = true;
-      logger.debug({ groupJid }, 'Container active, message queued');
+      logger.debug({ groupJid }, 'Container active, overflow unavailable, message queued');
       return;
     }
 
@@ -354,6 +605,11 @@ export class GroupQueue {
     for (const [_jid, state] of this.groups) {
       if (state.process && !state.process.killed && state.containerName) {
         activeContainers.push(state.containerName);
+      }
+      for (const slot of state.slots.values()) {
+        if (slot.process && !slot.process.killed && slot.containerName) {
+          activeContainers.push(`slot:${slot.slotId}:${slot.containerName}`);
+        }
       }
     }
 

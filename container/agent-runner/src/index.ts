@@ -30,6 +30,12 @@ interface ContainerInput {
   assistantName?: string;
   script?: string;
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
+  model?: string;
+  fallbackModel?: string;
+  allowModelDelegation?: boolean;
+  isOverflow?: boolean;
+  systemHint?: string;
+  slotId?: string;
 }
 
 interface ImageContentBlock {
@@ -429,9 +435,49 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  // Build model-specific agent templates when delegation is authorized
+  const modelAgents = containerInput.allowModelDelegation
+    ? {
+        'opus-agent': {
+          description:
+            'Use for complex reasoning, architecture decisions, nuanced analysis, and difficult problems',
+          prompt:
+            'You are a subagent running on Claude Opus. You have been delegated a task that benefits from deeper reasoning. Focus on thoroughness and accuracy.',
+          model: 'opus' as const,
+        },
+        'sonnet-agent': {
+          description:
+            'Use for balanced coding tasks, general-purpose work, and moderate complexity problems',
+          prompt:
+            'You are a subagent running on Claude Sonnet. You have been delegated a general-purpose task. Balance speed and quality.',
+          model: 'sonnet' as const,
+        },
+        'haiku-agent': {
+          description:
+            'Use for fast, simple tasks: lookups, formatting, summaries, simple transformations',
+          prompt:
+            'You are a subagent running on Claude Haiku. You have been delegated a task that benefits from speed. Be concise and efficient.',
+          model: 'haiku' as const,
+        },
+      }
+    : undefined;
+
+  if (containerInput.model) {
+    log(`Model: ${containerInput.model}`);
+  }
+  if (containerInput.fallbackModel) {
+    log(`Fallback model: ${containerInput.fallbackModel}`);
+  }
+  if (containerInput.allowModelDelegation) {
+    log('Model delegation enabled — opus-agent, sonnet-agent, haiku-agent available');
+  }
+
   for await (const message of query({
     prompt: stream,
     options: {
+      model: containerInput.model,
+      fallbackModel: containerInput.fallbackModel,
+      ...(modelAgents && { agents: modelAgents }),
       cwd: '/workspace/group',
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
@@ -448,7 +494,8 @@ async function runQuery(
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
-        'mcp__gws__*'
+        'mcp__gws__*',
+        'mcp__context7__*'
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -471,6 +518,10 @@ async function runQuery(
             NANOCLAW_CHAT_JID: containerInput.chatJid,
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
           },
+        },
+        context7: {
+          command: 'npx',
+          args: ['-y', '@upstash/context7-mcp'],
         },
       },
       hooks: {
@@ -594,6 +645,9 @@ async function main(): Promise<void> {
 
   // Build initial prompt (drain any pending IPC messages too)
   let prompt = containerInput.prompt;
+  if (containerInput.systemHint) {
+    prompt = `[${containerInput.systemHint}]\n\n${prompt}`;
+  }
   if (containerInput.isScheduledTask) {
     prompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${prompt}`;
   }
@@ -635,6 +689,12 @@ async function main(): Promise<void> {
       }
       if (queryResult.lastAssistantUuid) {
         resumeAt = queryResult.lastAssistantUuid;
+      }
+
+      // Overflow containers are single-turn: respond and exit immediately
+      if (containerInput.isOverflow) {
+        log('Overflow container, exiting after single query');
+        break;
       }
 
       // If _close was consumed during the query, exit immediately.

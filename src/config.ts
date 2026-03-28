@@ -9,7 +9,10 @@ const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
   'ONECLI_URL',
+  'TELEGRAM_BOT_POOL',
   'TZ',
+  'DEFAULT_MODEL',
+  'DEFAULT_FALLBACK_MODEL',
 ]);
 
 export const ASSISTANT_NAME =
@@ -59,6 +62,14 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
 );
+export const MAX_OVERFLOW_PER_GROUP = Math.max(
+  0,
+  parseInt(process.env.MAX_OVERFLOW_PER_GROUP || '2', 10) || 2,
+);
+export const MAX_SLOTS_PER_GROUP = Math.max(
+  1,
+  parseInt(process.env.MAX_SLOTS_PER_GROUP || '5', 10) || 5,
+);
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -76,6 +87,21 @@ export function getTriggerPattern(trigger?: string): RegExp {
 }
 
 export const TRIGGER_PATTERN = buildTriggerPattern(DEFAULT_TRIGGER);
+
+// Model configuration
+export const DEFAULT_MODEL =
+  process.env.DEFAULT_MODEL || envConfig.DEFAULT_MODEL || 'sonnet';
+export const DEFAULT_FALLBACK_MODEL =
+  process.env.DEFAULT_FALLBACK_MODEL || envConfig.DEFAULT_FALLBACK_MODEL || undefined;
+
+export const TELEGRAM_BOT_POOL = (
+  process.env.TELEGRAM_BOT_POOL ||
+  envConfig.TELEGRAM_BOT_POOL ||
+  ''
+)
+  .split(',')
+  .map((t) => t.trim())
+  .filter(Boolean);
 
 // Timezone for scheduled tasks, message formatting, etc.
 // Validates each candidate is a real IANA identifier before accepting.
