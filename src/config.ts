@@ -78,6 +78,12 @@ export const LITELLM_PROXY_URL =
 export const LITELLM_API_KEY =
   process.env.LITELLM_API_KEY || envConfig.LITELLM_API_KEY || '';
 
+// Claude Max subscription OAuth token — when set, containers use Max billing
+// instead of API key billing. Generate with: claude setup-token
+// This is mutually exclusive with OneCLI API key injection.
+export const CLAUDE_OAUTH_TOKEN =
+  process.env.CLAUDE_OAUTH_TOKEN || envConfig.CLAUDE_OAUTH_TOKEN || '';
+
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

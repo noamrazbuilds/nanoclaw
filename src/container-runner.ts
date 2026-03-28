@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 
 import {
+  CLAUDE_OAUTH_TOKEN,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
@@ -294,19 +295,27 @@ async function buildContainerArgs(
     }
   }
 
-  // OneCLI gateway handles credential injection — containers never see real secrets.
-  // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
-  const onecliApplied = await onecli.applyContainerConfig(args, {
-    addHostMapping: false, // Nanoclaw already handles host gateway
-    agent: agentIdentifier,
-  });
-  if (onecliApplied) {
-    logger.info({ containerName }, 'OneCLI gateway config applied');
+  // Authentication: prefer Max subscription OAuth > OneCLI API key gateway
+  if (CLAUDE_OAUTH_TOKEN) {
+    // Max subscription: inject OAuth token so the Agent SDK bills against Max
+    // instead of consuming API credits. Generate with: claude setup-token
+    args.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_OAUTH_TOKEN}`);
+    logger.info({ containerName }, 'Max subscription OAuth token injected');
   } else {
-    logger.warn(
-      { containerName },
-      'OneCLI gateway not reachable — container will have no credentials',
-    );
+    // OneCLI gateway handles credential injection — containers never see real secrets.
+    // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
+    const onecliApplied = await onecli.applyContainerConfig(args, {
+      addHostMapping: false, // Nanoclaw already handles host gateway
+      agent: agentIdentifier,
+    });
+    if (onecliApplied) {
+      logger.info({ containerName }, 'OneCLI gateway config applied');
+    } else {
+      logger.warn(
+        { containerName },
+        'OneCLI gateway not reachable — container will have no credentials',
+      );
+    }
   }
 
   // Runtime-specific args for host gateway resolution
