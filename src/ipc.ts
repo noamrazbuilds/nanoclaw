@@ -196,6 +196,7 @@ export async function processTaskIpc(
     containerConfig?: RegisteredGroup['containerConfig'];
     // For host_op
     op?: string;
+    args?: Record<string, unknown>;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -505,7 +506,7 @@ export async function processTaskIpc(
         break;
       }
       if (data.op && isValidHostOp(data.op)) {
-        const result = await executeHostOp(data.op);
+        const result = await executeHostOp(data.op, data.args);
         // Send result back to the requesting chat
         const sourceJid = Object.entries(registeredGroups).find(
           ([, g]) => g.folder === sourceGroup,

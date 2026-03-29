@@ -7,12 +7,14 @@ import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
+import { SENDER_ALLOWLIST_PATH } from './config.js';
 import { logger } from './logger.js';
 
 const ALLOWED_OPS = [
   'refresh_oauth',
   'restart_service',
   'rebuild_container',
+  'update_allowlist',
 ] as const;
 export type HostOp = (typeof ALLOWED_OPS)[number];
 
@@ -137,10 +139,63 @@ function rebuildContainer(): Promise<HostOpResult> {
 }
 
 /**
+ * Add or update a chat entry in the sender allowlist.
+ * args.chatJid: the chat JID to add/update
+ * args.senders: array of sender JIDs to allow
+ * args.mode: "trigger" (default) or "drop"
+ */
+function updateAllowlist(args?: Record<string, unknown>): HostOpResult {
+  const chatJid = args?.chatJid as string | undefined;
+  const senders = args?.senders as string[] | undefined;
+  const mode = (args?.mode as string) || 'trigger';
+
+  if (!chatJid || !senders || !Array.isArray(senders) || senders.length === 0) {
+    return {
+      ok: false,
+      message:
+        'Missing required args: chatJid (string) and senders (string[])',
+    };
+  }
+
+  try {
+    let config: Record<string, unknown> = {
+      default: { allow: '*', mode: 'trigger' },
+      chats: {},
+      logDenied: true,
+    };
+
+    if (fs.existsSync(SENDER_ALLOWLIST_PATH)) {
+      config = JSON.parse(fs.readFileSync(SENDER_ALLOWLIST_PATH, 'utf-8'));
+    } else {
+      fs.mkdirSync(path.dirname(SENDER_ALLOWLIST_PATH), { recursive: true });
+    }
+
+    const chats = (config.chats || {}) as Record<string, unknown>;
+    chats[chatJid] = { allow: senders, mode };
+    config.chats = chats;
+
+    fs.writeFileSync(
+      SENDER_ALLOWLIST_PATH,
+      JSON.stringify(config, null, 2) + '\n',
+    );
+
+    return {
+      ok: true,
+      message: `Allowlist updated for ${chatJid}: ${senders.length} sender(s), mode=${mode}`,
+    };
+  } catch (err: any) {
+    return { ok: false, message: `Failed: ${err.message}` };
+  }
+}
+
+/**
  * Execute a predefined host operation.
  */
-export async function executeHostOp(op: HostOp): Promise<HostOpResult> {
-  logger.info({ op }, 'Executing host operation');
+export async function executeHostOp(
+  op: HostOp,
+  args?: Record<string, unknown>,
+): Promise<HostOpResult> {
+  logger.info({ op, args }, 'Executing host operation');
 
   let result: HostOpResult;
   switch (op) {
@@ -152,6 +207,9 @@ export async function executeHostOp(op: HostOp): Promise<HostOpResult> {
       break;
     case 'rebuild_container':
       result = await rebuildContainer();
+      break;
+    case 'update_allowlist':
+      result = updateAllowlist(args);
       break;
   }
 

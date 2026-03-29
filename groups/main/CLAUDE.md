@@ -160,13 +160,24 @@ echo '{"type":"host_op","op":"<operation>"}' > /workspace/ipc/tasks/hostop_$(dat
 | `refresh_oauth` | Re-extracts OAuth token from `~/.claude/.credentials.json` and updates `.env` | After `claude login`, or when you detect a 401 auth error |
 | `restart_service` | Runs `systemctl --user restart nanoclaw` | After config/env changes that need a process restart |
 | `rebuild_container` | Runs `./container/build.sh` | After container skill changes or Dockerfile updates |
+| `update_allowlist` | Adds/updates a chat entry in the sender allowlist | When user wants to restrict who can trigger the bot in a group |
+
+`update_allowlist` requires an `args` field with the entry details:
+
+```bash
+echo '{"type":"host_op","op":"update_allowlist","args":{"chatJid":"120363149771673023@g.us","senders":["972523158381@s.whatsapp.net"],"mode":"trigger"}}' > /workspace/ipc/tasks/hostop_$(date +%s).json
+```
+
+- `chatJid`: the group's JID
+- `senders`: array of sender JIDs allowed to trigger the bot
+- `mode`: `"trigger"` (store all messages, only allowed senders trigger) or `"drop"` (non-allowed messages not stored at all)
 
 The result is sent back to this chat as a message (✅ or ❌ with details).
 
 **Important:** These are fire-and-forget. `restart_service` will restart NanoClaw (including you), so only use it when the user has asked for it or after making changes that require a restart. Do NOT chain `refresh_oauth` + `restart_service` in rapid succession — write `refresh_oauth` first, wait for the ✅ confirmation, then write `restart_service` if needed.
 
 **When to use host ops vs. Remote Control:**
-- OAuth token refresh, service restart, container rebuild → use host ops
+- OAuth token refresh, service restart, container rebuild, allowlist updates → use host ops
 - Reading `~/.claude/` config, inspecting CLI internals, debugging host state → suggest Remote Control
 
 ---
