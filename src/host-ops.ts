@@ -152,8 +152,7 @@ function updateAllowlist(args?: Record<string, unknown>): HostOpResult {
   if (!chatJid || !senders || !Array.isArray(senders) || senders.length === 0) {
     return {
       ok: false,
-      message:
-        'Missing required args: chatJid (string) and senders (string[])',
+      message: 'Missing required args: chatJid (string) and senders (string[])',
     };
   }
 

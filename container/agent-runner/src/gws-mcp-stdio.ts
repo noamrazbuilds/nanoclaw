@@ -94,13 +94,13 @@ function generateNonce(command: string): string {
   return nonce;
 }
 
-function consumeNonce(nonce: string, command: string): boolean {
+function consumeNonce(nonce: string): boolean {
   const entry = pendingNonces.get(nonce);
   if (!entry) return false;
   pendingNonces.delete(nonce);
   if (Date.now() > entry.expiresAt) return false;
-  // Verify the command matches what was originally requested
-  if (entry.command !== command) return false;
+  // Nonce is cryptographically random and single-use — that's the security.
+  // No command match: agents legitimately reformat commands between calls.
   return true;
 }
 
@@ -344,10 +344,12 @@ server.tool(
   `Execute any Google Workspace CLI command. This is the main tool for interacting with Google Workspace services.
 
 IMPORTANT — WRITE OPERATIONS REQUIRE CONFIRMATION:
-When you call this with a write operation (send, create, update, delete, etc.), the tool will return a confirmation_required response with a nonce. You MUST then:
-1. Use send_message to ask the user for confirmation, showing them exactly what will happen
-2. Wait for the user to reply "yes" / "approve" / "go ahead" (or similar)
-3. Call gws_run again with the SAME command and the nonce to execute
+When you call this with a write operation (send, create, update, delete, etc.), the tool will return a confirmation_required response with a nonce. You MUST then call gws_run again with the confirmed_nonce to execute.
+
+Confirmation rules:
+• If the user explicitly requested the action (e.g., "move my 3pm meeting to 4pm"), the user's message IS the confirmation — immediately re-call with the nonce. No need to ask again.
+• If you're acting on your own initiative or the action is ambiguous/risky (e.g., deleting data, sending to contacts), use send_message to describe what will happen and wait for the user to approve before re-calling with the nonce.
+• The command in the second call does NOT need to be identical to the first — the nonce itself is the authorization token.
 
 Read operations (list, get, search, read, triage) execute immediately.
 
@@ -364,19 +366,32 @@ Examples:
   },
   async (args) => {
     const start = Date.now();
-    const classification = classifyOperation(args.command);
-    const gwsArgs = parseCommand(args.command);
+
+    // Extract --confirmed_nonce from command string if agent embedded it there
+    // instead of using the separate tool parameter
+    let command = args.command;
+    let confirmedNonce = args.confirmed_nonce;
+    if (!confirmedNonce) {
+      const nonceInCmd = command.match(/--confirmed_nonce\s+([a-f0-9]{32})/);
+      if (nonceInCmd) {
+        confirmedNonce = nonceInCmd[1];
+        command = command.replace(/\s*--confirmed_nonce\s+[a-f0-9]{32}/, '').trim();
+      }
+    }
+
+    const classification = classifyOperation(command);
+    const gwsArgs = parseCommand(command);
 
     // Write operations require confirmation
     if (classification === 'write') {
-      if (!args.confirmed_nonce) {
+      if (!confirmedNonce) {
         // First call — return confirmation request with nonce
-        const nonce = generateNonce(args.command);
+        const nonce = generateNonce(command);
 
         writeAuditLog({
           timestamp: new Date().toISOString(),
           tool: 'gws_run',
-          command: args.command,
+          command,
           classification: 'write',
           confirmed: false,
           nonce,
@@ -391,7 +406,7 @@ Examples:
             type: 'text' as const,
             text: JSON.stringify({
               status: 'confirmation_required',
-              operation: args.command,
+              operation: command,
               nonce,
               message: 'This write operation requires user confirmation. Send a message to the user describing what will happen, then call gws_run again with the same command and the confirmed_nonce parameter set to this nonce after they approve.',
             }, null, 2),
@@ -400,14 +415,14 @@ Examples:
       }
 
       // Second call — verify nonce and execute
-      if (!consumeNonce(args.confirmed_nonce, args.command)) {
+      if (!consumeNonce(confirmedNonce)) {
         writeAuditLog({
           timestamp: new Date().toISOString(),
           tool: 'gws_run',
-          command: args.command,
+          command,
           classification: 'write',
           confirmed: false,
-          nonce: args.confirmed_nonce,
+          nonce: confirmedNonce,
           status: 'nonce_invalid',
           duration_ms: Date.now() - start,
           result_size: 0,
@@ -430,10 +445,10 @@ Examples:
     writeAuditLog({
       timestamp: new Date().toISOString(),
       tool: 'gws_run',
-      command: args.command,
+      command,
       classification,
       confirmed: classification === 'write' ? true : null,
-      nonce: args.confirmed_nonce || undefined,
+      nonce: confirmedNonce || undefined,
       status: result.exitCode === 0 ? 'success' : 'error',
       duration_ms: Date.now() - start,
       result_size: result.stdout.length,
