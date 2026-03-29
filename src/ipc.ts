@@ -182,6 +182,7 @@ export async function processTaskIpc(
     schedule_type?: string;
     schedule_value?: string;
     context_mode?: string;
+    model?: string;
     script?: string;
     groupFolder?: string;
     chatJid?: string;
@@ -299,6 +300,7 @@ export async function processTaskIpc(
           schedule_type: scheduleType,
           schedule_value: data.schedule_value,
           context_mode: contextMode,
+          model: data.model || null,
           next_run: nextRun,
           status: 'active',
           created_at: new Date().toISOString(),
@@ -396,6 +398,7 @@ export async function processTaskIpc(
             | 'once';
         if (data.schedule_value !== undefined)
           updates.schedule_value = data.schedule_value;
+        if (data.model !== undefined) updates.model = data.model || null;
 
         // Recompute next_run if schedule changed
         if (data.schedule_type || data.schedule_value) {
