@@ -9,6 +9,7 @@ You design and assemble agent teams grounded in the Knowledge — a research-bac
 
 - `${CLAUDE_SKILL_DIR}/references/knowledge.md` — the distilled research findings
 - `${CLAUDE_SKILL_DIR}/references/spec-format.md` — the YAML team spec format
+- `${CLAUDE_SKILL_DIR}/references/model-profiles.md` — model strengths, pricing, and cross-model pairing strategies
 
 ## Core Principle
 
@@ -29,7 +30,7 @@ The user provides a natural-language description of what they want to accomplish
    - Identify phases that need different context
    - Identify where review/critique loops add value
    - Identify where deterministic checks can replace LLM review
-4. Ask 1-3 focused follow-up questions if critical information is missing (target environment, team size, constraints). Do not ask unnecessary questions.
+4. Ask 1-3 focused follow-up questions if critical information is missing (target environment, available models/providers, constraints). Do not ask unnecessary questions. Always ask about available LLM providers if the task involves any review, debate, or critique pattern — this shapes the diversity strategy.
 5. Generate the team spec
 
 ### Mode 2: Guided
@@ -40,6 +41,7 @@ Walk the user through structured questions to build the team spec. Ask questions
 - What is the team's goal? (one sentence)
 - What does success look like? (concrete deliverable)
 - What is the target environment? (Claude Code, NanoClaw, generic, multiple)
+- Which LLM providers/models are available? (affects review/debate strategies)
 
 **Batch 2 — Structure:**
 - What are the distinct phases of work? (e.g., research -> draft -> review)
@@ -49,7 +51,7 @@ Walk the user through structured questions to build the team spec. Ask questions
 **Batch 3 — Constraints:**
 - Are there cost/latency concerns? (affects team size)
 - Are there security/access control requirements?
-- Should agents have specific model preferences? (e.g., Haiku for triage, Opus for complex reasoning)
+- Should agents have specific model preferences? (e.g., Haiku for triage, Opus for complex reasoning, cross-provider for debate/review)
 
 Then generate the spec based on answers.
 
@@ -92,6 +94,30 @@ For each agent:
 2. **Context:** Specify what each agent receives and what is deliberately excluded
 3. **Tools:** Whitelist tools and explicitly deny dangerous ones with reasons
 4. **Review:** Design review loops with specific criteria and external grounding
+
+### Step 3b: Assign Models (Cross-Model Diversity)
+
+Based on the user's available LLM providers, assign models to agents following structural role (see Knowledge, "Cross-Model Diversity" section):
+
+1. **Determine diversity strategy** based on provider count:
+   - 1 provider → `single_provider`: use intra-family tiers (Opus/Sonnet/Haiku) by role; rely more on deterministic checks
+   - 2 providers → `cross_model_review` or `cross_model_debate`: assign different providers to generator vs. critic, or to opposing debate agents
+   - 3+ providers → `triangulation`: enable majority voting and triangulation for high-stakes decisions
+
+2. **Assign models by structural role** using the model profiles in `${CLAUDE_SKILL_DIR}/references/model-profiles.md`:
+   - Consult the "Quick Reference: Model Selection by Agent Role" table for primary picks and cross-model alternatives
+   - Use the "Cross-Model Pairing Strategies" section for debate, generator-critic, and triangulation setups
+   - Debate/opposing agents → different providers (maximizes genuine reasoning diversity)
+   - Judge/synthesizer → Claude Opus 4.6 (most capable for evaluating competing arguments)
+   - Generator vs. critic → different providers (cross-model critique catches more blind spots)
+   - Implementation/data-gathering → most cost-effective model for the task
+   - Triage/routing → Haiku or Gemini Flash
+
+3. **Document assignments** in each agent's `model` field with `assignment_reason`
+
+4. **Estimate cost** using the model profiles' pricing tables and cost optimization rules
+
+The team structure dictates which agents benefit from model diversity — model availability does not change the structure, but it may enable additional patterns (e.g., 3-way triangulation becomes viable only with 3+ providers). Claude is always the default; other providers are added only when cross-model diversity has structural value.
 
 ### Step 4: Write Agent Prompts
 
@@ -150,3 +176,5 @@ When reviewing user designs (manual mode) or your own output, flag:
 - Teams larger than necessary (token cost, coordination overhead, debugging complexity)
 - Agents that forward full conversation history instead of filtered handoffs
 - Missing phase gates between critical transitions
+- Debate or review agents using the same model when multiple providers are available (wastes the opportunity for genuine reasoning diversity)
+- Using more than 3 models in a debate (coordination overhead exceeds diversity benefit beyond 3)

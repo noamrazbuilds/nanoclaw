@@ -17,6 +17,21 @@ meta:
     Why this team structure was chosen over alternatives.
     What single-agent alternative was considered and why it was rejected.
 
+models:
+  available:  # LLM providers/models the user has access to
+    - provider: "anthropic"
+      models: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"]
+    - provider: "openai"
+      models: ["gpt-4o", "o3"]
+    - provider: "google"
+      models: ["gemini-2.0-flash"]
+  diversity_strategy: single_provider | cross_model_review | cross_model_debate | triangulation
+  # single_provider:      1 provider — use intra-family diversity + deterministic checks
+  # cross_model_review:   2 providers — generator and critic use different models
+  # cross_model_debate:   2 providers — debate agents use different models, judge uses most capable
+  # triangulation:        3+ providers — majority voting / triangulation for high-stakes decisions
+  rationale: "why this diversity strategy was chosen"
+
 workflow:
   type: linear | branching | parallel | loop
   description: "How agents interact and in what order"
@@ -55,6 +70,16 @@ agents:
 
     constraints:
       - "hard rules this agent must follow"
+
+    model:
+      provider: "anthropic | openai | google | ollama"  # which provider this agent uses
+      model_id: "claude-sonnet-4-6"  # specific model
+      assignment_reason: "why this model was chosen for this role"
+      # Examples:
+      # - debate agent: "different provider from opposing agent for genuine reasoning diversity"
+      # - judge: "most capable model available — must evaluate competing arguments"
+      # - implementation: "cost-effective model sufficient for this task"
+      # - critic: "different provider from generator to maximize blind-spot coverage"
 
     prompt: |
       The full agent prompt, following the constraint-based template:

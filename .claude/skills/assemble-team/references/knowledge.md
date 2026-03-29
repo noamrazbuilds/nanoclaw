@@ -94,6 +94,9 @@ Agent maintains memory of past failures and consults it before acting.
 **Pattern: Adversarial Debate**
 Two agents argue positions; judge synthesizes. Best for high-stakes decisions. 2-3 rounds optimal, hard ceiling at 5.
 
+**Pattern: Cross-Model Review and Debate**
+Using different LLM providers for debate/review agents produces genuinely independent reasoning — same-model debate shares training biases and blind spots. See the Cross-Model Diversity section below for full guidance.
+
 **Pattern: Deterministic Verification Layer**
 Use linters, type checkers, tests before LLM review. Reserve LLM review for subjective/complex judgments.
 
@@ -134,6 +137,46 @@ DO NOT USE: [explicit exclusions with reasons]
 CONSTRAINTS:
   - [Hard rules this agent must follow]
 ```
+
+## Cross-Model Diversity
+
+When multiple LLM providers are available, cross-model assignment improves debate, review, and critique quality. Same-model agents share training biases and failure modes; cross-model agents produce genuinely independent reasoning.
+
+### Model Assignment by Structural Role
+
+Model assignment follows structure — the team design dictates which agents benefit from different models, not the reverse. However, model availability can enable patterns (like majority voting) that wouldn't be viable with a single provider.
+
+| Structural Role | Model Assignment Strategy |
+|----------------|--------------------------|
+| Debate agents | Different models — the whole point is independent reasoning |
+| Judge / synthesizer | Most capable model available — must evaluate competing arguments |
+| Generator vs. critic | Different models — cross-model critique catches more (Kamoi et al.) |
+| Implementation / data gathering | Most cost-effective model — no diversity benefit here |
+| Triage / routing | Cheapest sufficient model — latency matters more than depth |
+
+### When 2 Models Suffice
+
+- Generator-critic patterns (structurally a 2-party interaction)
+- Cost/latency is a constraint and the quality gain from a third is marginal
+- The task doesn't have multiple valid approaches worth comparing
+
+### When 3 Models Add Value
+
+- **Majority voting:** 2v1 is decisive; 1v1 is a deadlock requiring a separate judge. With 3 models, the debate itself can converge without a tiebreaker.
+- **Triangulation:** If 2 of 3 independently reach the same conclusion via different reasoning, that's stronger evidence than any single critique.
+- **Blind spot coverage:** Each model family has different failure modes. Three models maximize the chance of catching errors no single model would find.
+- **High-stakes decisions** where correctness matters more than cost.
+
+### Diminishing Returns
+
+The jump from 1→2 models is much larger than 2→3. Beyond 3, the coordination overhead almost always exceeds the diversity benefit. The round ceiling (2-3 optimal, 5 max) still applies regardless of model count.
+
+### Model Availability Discovery
+
+The skill should ask about available models/providers early in the process. This information shapes the review/critique design:
+- **1 provider (e.g., Claude only):** Use intra-family diversity (Opus vs Sonnet vs Haiku by role) and lean more heavily on deterministic verification to compensate for shared blind spots.
+- **2 providers:** Enable cross-model generator-critic pairs and 2-way debate.
+- **3+ providers:** Enable triangulation and majority-vote patterns for high-stakes decisions.
 
 ## Reference Architectures
 
