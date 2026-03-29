@@ -8,6 +8,9 @@ import { isValidTimezone } from './timezone.js';
 const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
+  'CLAUDE_OAUTH_TOKEN',
+  'LITELLM_API_KEY',
+  'LITELLM_PROXY_URL',
   'ONECLI_URL',
   'TELEGRAM_BOT_POOL',
   'TZ',
