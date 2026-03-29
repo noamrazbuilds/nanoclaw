@@ -5,6 +5,7 @@ import { OneCLI } from '@onecli-sh/sdk';
 
 import {
   ASSISTANT_NAME,
+  CLAUDE_OAUTH_TOKEN,
   DEFAULT_FALLBACK_MODEL,
   DEFAULT_MODEL,
   DEFAULT_TRIGGER,
@@ -67,6 +68,11 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { parseImageReferences } from './image.js';
 import { logger } from './logger.js';
+import {
+  isAuthError,
+  startOAuthRefreshMonitor,
+  stopOAuthRefreshMonitor,
+} from './oauth-refresh.js';
 import { parseSlotPrefix, slotSessionKey } from './slots.js';
 
 // Re-export for backwards compatibility during refactor
@@ -690,6 +696,20 @@ async function runAgent(
         { group: group.name, error: output.error },
         'Container agent error',
       );
+      // Detect OAuth token expiry errors and notify the user
+      if (output.error && isAuthError(output.error) && CLAUDE_OAUTH_TOKEN) {
+        const ch = findChannel(channels, chatJid);
+        if (ch) {
+          ch.sendMessage(
+            chatJid,
+            `⚠️ *Authentication Error*\n\nThe Claude Max OAuth token appears to be expired or invalid. ` +
+              `NanoClaw will try to auto-refresh, but if this keeps happening, re-authenticate:\n` +
+              `1. SSH into the server\n` +
+              `2. Run \`claude login\`\n` +
+              `3. Restart: \`systemctl --user restart nanoclaw\``,
+          ).catch(() => {});
+        }
+      }
       return 'error';
     }
 
@@ -939,6 +959,7 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    stopOAuthRefreshMonitor();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
@@ -1112,6 +1133,19 @@ async function main(): Promise<void> {
   queue.setProcessMessagesFn(processGroupMessages);
   queue.setOverflowFn(processOverflowMessages);
   queue.setSlotProcessFn(processSlotMessages);
+
+  // Start OAuth token refresh monitor — sends notifications to all main groups
+  // if the Max subscription token is about to expire and can't be refreshed.
+  if (CLAUDE_OAUTH_TOKEN) {
+    startOAuthRefreshMonitor(async (message) => {
+      for (const [jid, group] of Object.entries(registeredGroups)) {
+        if (!group.isMain) continue;
+        const ch = findChannel(channels, jid);
+        if (ch) await ch.sendMessage(jid, message);
+      }
+    });
+  }
+
   recoverPendingMessages();
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');
