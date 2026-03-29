@@ -44,6 +44,8 @@ interface OAuthCredentials {
 let notifyFn: ((message: string) => Promise<void>) | null = null;
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 let lastNotifiedExpiry = 0;
+// In-memory cache of the latest valid access token (updated by refresh cycle)
+let cachedAccessToken: string | null = null;
 
 /**
  * Read OAuth credentials from the Claude credentials file.
@@ -74,6 +76,7 @@ function writeCredentials(creds: OAuthCredentials): void {
     const data = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf-8'));
     data.claudeAiOauth = JSON.stringify(creds);
     fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(data));
+    cachedAccessToken = creds.accessToken;
   } catch (err) {
     logger.error({ err }, 'Failed to write updated OAuth credentials');
   }
@@ -272,6 +275,23 @@ export function startOAuthRefreshMonitor(
   }, CHECK_INTERVAL_MS);
 
   logger.info('OAuth token refresh monitor started');
+}
+
+/**
+ * Get the latest OAuth access token. Prefers the in-memory cached token
+ * (kept fresh by the refresh monitor), falls back to reading credentials file.
+ * Returns empty string if no token is available.
+ */
+export function getOAuthToken(): string {
+  if (cachedAccessToken) return cachedAccessToken;
+
+  // Fallback: read from credentials file (cold start before first refresh)
+  const creds = readCredentials();
+  if (creds?.accessToken) {
+    cachedAccessToken = creds.accessToken;
+    return creds.accessToken;
+  }
+  return '';
 }
 
 /**

@@ -7,7 +7,6 @@ import fs from 'fs';
 import path from 'path';
 
 import {
-  CLAUDE_OAUTH_TOKEN,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
@@ -29,6 +28,7 @@ import {
 } from './container-runtime.js';
 import { OneCLI } from '@onecli-sh/sdk';
 import { validateAdditionalMounts } from './mount-security.js';
+import { getOAuthToken } from './oauth-refresh.js';
 import { RegisteredGroup } from './types.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL });
@@ -296,10 +296,12 @@ async function buildContainerArgs(
   }
 
   // Authentication: prefer Max subscription OAuth > OneCLI API key gateway
-  if (CLAUDE_OAUTH_TOKEN) {
+  // Read token fresh each spawn so mid-process refreshes take effect immediately
+  const oauthToken = getOAuthToken();
+  if (oauthToken) {
     // Max subscription: inject OAuth token so the Agent SDK bills against Max
     // instead of consuming API credits. Generate with: claude setup-token
-    args.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_OAUTH_TOKEN}`);
+    args.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${oauthToken}`);
     logger.info({ containerName }, 'Max subscription OAuth token injected');
   } else {
     // OneCLI gateway handles credential injection — containers never see real secrets.
