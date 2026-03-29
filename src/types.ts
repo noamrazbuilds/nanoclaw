@@ -30,6 +30,9 @@ export interface AllowedRoot {
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
+  model?: string; // Override model for this group (e.g., 'opus', 'sonnet', 'haiku')
+  fallbackModel?: string; // Fallback model if primary fails
+  allowModelDelegation?: boolean; // Allow agent to use different models for subagents
 }
 
 export interface RegisteredGroup {

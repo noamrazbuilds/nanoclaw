@@ -105,12 +105,18 @@ export class GroupQueue {
     this.activeCount++;
 
     logger.info(
-      { groupJid, overflowCount: state.overflowCount, activeCount: this.activeCount },
+      {
+        groupJid,
+        overflowCount: state.overflowCount,
+        activeCount: this.activeCount,
+      },
       'Spawning overflow container',
     );
 
     this.overflowFn(groupJid)
-      .catch((err) => logger.error({ groupJid, err }, 'Overflow container error'))
+      .catch((err) =>
+        logger.error({ groupJid, err }, 'Overflow container error'),
+      )
       .finally(() => {
         state.overflowCount--;
         this.activeCount--;
@@ -181,7 +187,12 @@ export class GroupQueue {
     // Need to create/restart the slot — check capacity
     if (!this.canCreateSlot(groupJid) && !slot) {
       logger.warn(
-        { groupJid, slotId, slotCount: state.slots.size, activeCount: this.activeCount },
+        {
+          groupJid,
+          slotId,
+          slotCount: state.slots.size,
+          activeCount: this.activeCount,
+        },
         'Cannot create slot: at capacity',
       );
       return false;
@@ -224,11 +235,7 @@ export class GroupQueue {
   }
 
   /** Send a follow-up message to an active slot container via IPC */
-  sendSlotMessage(
-    groupJid: string,
-    slotId: string,
-    text: string,
-  ): boolean {
+  sendSlotMessage(groupJid: string, slotId: string, text: string): boolean {
     const state = this.getGroup(groupJid);
     const slot = state.slots.get(slotId);
     if (!slot?.active || !slot.groupFolder) return false;
@@ -317,7 +324,10 @@ export class GroupQueue {
         return;
       }
       state.pendingMessages = true;
-      logger.debug({ groupJid }, 'Container active, overflow unavailable, message queued');
+      logger.debug(
+        { groupJid },
+        'Container active, overflow unavailable, message queued',
+      );
       return;
     }
 

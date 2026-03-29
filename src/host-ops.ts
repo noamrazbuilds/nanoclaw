@@ -9,7 +9,11 @@ import path from 'path';
 
 import { logger } from './logger.js';
 
-const ALLOWED_OPS = ['refresh_oauth', 'restart_service', 'rebuild_container'] as const;
+const ALLOWED_OPS = [
+  'refresh_oauth',
+  'restart_service',
+  'rebuild_container',
+] as const;
 export type HostOp = (typeof ALLOWED_OPS)[number];
 
 export function isValidHostOp(op: string): op is HostOp {
@@ -34,7 +38,10 @@ function refreshOauth(): HostOpResult {
 
   try {
     if (!fs.existsSync(credPath)) {
-      return { ok: false, message: 'Credentials file not found at ' + credPath };
+      return {
+        ok: false,
+        message: 'Credentials file not found at ' + credPath,
+      };
     }
 
     const data = JSON.parse(fs.readFileSync(credPath, 'utf-8'));
@@ -63,9 +70,8 @@ function refreshOauth(): HostOpResult {
     const expiresIn = oauth.expiresAt
       ? Math.round((oauth.expiresAt - Date.now()) / 60000)
       : null;
-    const expiryNote = expiresIn != null
-      ? ` Token expires in ~${expiresIn} minutes.`
-      : '';
+    const expiryNote =
+      expiresIn != null ? ` Token expires in ~${expiresIn} minutes.` : '';
 
     return {
       ok: true,
@@ -82,13 +88,20 @@ function refreshOauth(): HostOpResult {
  */
 function restartService(): Promise<HostOpResult> {
   return new Promise((resolve) => {
-    exec('systemctl --user restart nanoclaw', { timeout: 30000 }, (err, _stdout, stderr) => {
-      if (err) {
-        resolve({ ok: false, message: `Restart failed: ${stderr || err.message}` });
-      } else {
-        resolve({ ok: true, message: 'NanoClaw service restarted.' });
-      }
-    });
+    exec(
+      'systemctl --user restart nanoclaw',
+      { timeout: 30000 },
+      (err, _stdout, stderr) => {
+        if (err) {
+          resolve({
+            ok: false,
+            message: `Restart failed: ${stderr || err.message}`,
+          });
+        } else {
+          resolve({ ok: true, message: 'NanoClaw service restarted.' });
+        }
+      },
+    );
   });
 }
 
@@ -103,16 +116,23 @@ function rebuildContainer(): Promise<HostOpResult> {
       return;
     }
 
-    exec(buildScript, { timeout: 300000, cwd: process.cwd() }, (err, stdout, stderr) => {
-      if (err) {
-        resolve({
-          ok: false,
-          message: `Build failed: ${(stderr || err.message).slice(0, 500)}`,
-        });
-      } else {
-        resolve({ ok: true, message: 'Container image rebuilt successfully.' });
-      }
-    });
+    exec(
+      buildScript,
+      { timeout: 300000, cwd: process.cwd() },
+      (err, stdout, stderr) => {
+        if (err) {
+          resolve({
+            ok: false,
+            message: `Build failed: ${(stderr || err.message).slice(0, 500)}`,
+          });
+        } else {
+          resolve({
+            ok: true,
+            message: 'Container image rebuilt successfully.',
+          });
+        }
+      },
+    );
   });
 }
 
@@ -135,6 +155,9 @@ export async function executeHostOp(op: HostOp): Promise<HostOpResult> {
       break;
   }
 
-  logger.info({ op, ok: result.ok, message: result.message }, 'Host operation completed');
+  logger.info(
+    { op, ok: result.ok, message: result.message },
+    'Host operation completed',
+  );
   return result;
 }

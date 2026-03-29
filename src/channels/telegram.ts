@@ -41,6 +41,96 @@ async function sendTelegramMessage(
   }
 }
 
+// Bot pool for agent teams: send-only Api instances (no polling)
+const poolApis: Api[] = [];
+// Maps "{groupFolder}:{senderName}" → pool Api index for stable assignment
+const senderBotMap = new Map<string, number>();
+let nextPoolIndex = 0;
+
+/**
+ * Initialize send-only Api instances for the bot pool.
+ * Each pool bot can send messages but doesn't poll for updates.
+ */
+export async function initBotPool(tokens: string[]): Promise<void> {
+  for (const token of tokens) {
+    try {
+      const api = new Api(token);
+      const me = await api.getMe();
+      poolApis.push(api);
+      logger.info(
+        { username: me.username, id: me.id, poolSize: poolApis.length },
+        'Pool bot initialized',
+      );
+    } catch (err) {
+      logger.error({ err }, 'Failed to initialize pool bot');
+    }
+  }
+  if (poolApis.length > 0) {
+    logger.info({ count: poolApis.length }, 'Telegram bot pool ready');
+  }
+}
+
+/**
+ * Send a message via a pool bot assigned to the given sender name.
+ * Assigns bots round-robin on first use; subsequent messages from the
+ * same sender in the same group always use the same bot.
+ * On first assignment, renames the bot to match the sender's role.
+ */
+export async function sendPoolMessage(
+  chatId: string,
+  text: string,
+  sender: string,
+  groupFolder: string,
+): Promise<void> {
+  if (poolApis.length === 0) {
+    return;
+  }
+
+  const key = `${groupFolder}:${sender}`;
+  let idx = senderBotMap.get(key);
+  if (idx === undefined) {
+    idx = nextPoolIndex % poolApis.length;
+    nextPoolIndex++;
+    senderBotMap.set(key, idx);
+    try {
+      await poolApis[idx].setMyName(sender);
+      await new Promise((r) => setTimeout(r, 2000));
+      logger.info(
+        { sender, groupFolder, poolIndex: idx },
+        'Assigned and renamed pool bot',
+      );
+    } catch (err) {
+      logger.warn(
+        { sender, err },
+        'Failed to rename pool bot (sending anyway)',
+      );
+    }
+  }
+
+  const api = poolApis[idx];
+  try {
+    const numericId = chatId.replace(/^tg:/, '');
+    const MAX_LENGTH = 4096;
+    if (text.length <= MAX_LENGTH) {
+      await sendTelegramMessage(api, numericId, text);
+    } else {
+      for (let i = 0; i < text.length; i += MAX_LENGTH) {
+        await sendTelegramMessage(
+          api,
+          numericId,
+          text.slice(i, i + MAX_LENGTH),
+        );
+      }
+    }
+    logger.info(
+      { chatId, sender, poolIndex: idx, length: text.length },
+      'Pool message sent',
+    );
+  } catch (err) {
+    logger.error({ chatId, sender, err }, 'Failed to send pool message');
+  }
+}
+
 export class TelegramChannel implements Channel {
   name = 'telegram';
 
@@ -201,30 +291,36 @@ export class TelegramChannel implements Channel {
       });
     };
 
-    this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
-    this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
-    this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
-    this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
-    this.bot.on('message:document', (ctx) => {
+    this.bot.on('message:photo', (ctx: any) => storeNonText(ctx, '[Photo]'));
+    this.bot.on('message:video', (ctx: any) => storeNonText(ctx, '[Video]'));
+    this.bot.on('message:voice', (ctx: any) =>
+      storeNonText(ctx, '[Voice message]'),
+    );
+    this.bot.on('message:audio', (ctx: any) => storeNonText(ctx, '[Audio]'));
+    this.bot.on('message:document', (ctx: any) => {
       const name = ctx.message.document?.file_name || 'file';
       storeNonText(ctx, `[Document: ${name}]`);
     });
-    this.bot.on('message:sticker', (ctx) => {
+    this.bot.on('message:sticker', (ctx: any) => {
       const emoji = ctx.message.sticker?.emoji || '';
       storeNonText(ctx, `[Sticker ${emoji}]`);
     });
-    this.bot.on('message:location', (ctx) => storeNonText(ctx, '[Location]'));
-    this.bot.on('message:contact', (ctx) => storeNonText(ctx, '[Contact]'));
+    this.bot.on('message:location', (ctx: any) =>
+      storeNonText(ctx, '[Location]'),
+    );
+    this.bot.on('message:contact', (ctx: any) =>
+      storeNonText(ctx, '[Contact]'),
+    );
 
     // Handle errors gracefully
-    this.bot.catch((err) => {
+    this.bot.catch((err: any) => {
       logger.error({ err: err.message }, 'Telegram bot error');
     });
 
     // Start polling — returns a Promise that resolves when started
     return new Promise<void>((resolve) => {
       this.bot!.start({
-        onStart: (botInfo) => {
+        onStart: (botInfo: any) => {
           logger.info(
             { username: botInfo.username, id: botInfo.id },
             'Telegram bot connected',
