@@ -3,10 +3,17 @@ import path from 'path';
 
 import { CronExpressionParser } from 'cron-parser';
 
-import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
+import {
+  DATA_DIR,
+  IPC_POLL_INTERVAL,
+  TIMEZONE,
+  TELEGRAM_BOT_POOL,
+} from './config.js';
+import { sendPoolMessage } from './channels/telegram.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
+import { executeHostOp, isValidHostOp } from './host-ops.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -81,9 +88,22 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  await deps.sendMessage(data.chatJid, data.text);
+                  if (
+                    data.sender &&
+                    data.chatJid.startsWith('tg:') &&
+                    TELEGRAM_BOT_POOL.length > 0
+                  ) {
+                    await sendPoolMessage(
+                      data.chatJid,
+                      data.text,
+                      data.sender,
+                      sourceGroup,
+                    );
+                  } else {
+                    await deps.sendMessage(data.chatJid, data.text);
+                  }
                   logger.info(
-                    { chatJid: data.chatJid, sourceGroup },
+                    { chatJid: data.chatJid, sourceGroup, sender: data.sender },
                     'IPC message sent',
                   );
                 } else {
@@ -173,6 +193,8 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For host_op
+    op?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -238,7 +260,19 @@ export async function processTaskIpc(
           }
           nextRun = new Date(Date.now() + ms).toISOString();
         } else if (scheduleType === 'once') {
-          const date = new Date(data.schedule_value);
+          let date = new Date(data.schedule_value);
+          // If the value has no timezone indicator, interpret it in the
+          // configured timezone (e.g. Asia/Jerusalem) rather than UTC.
+          if (
+            !/[Zz]/.test(data.schedule_value) &&
+            !/[+-]\d{2}:?\d{2}$/.test(data.schedule_value)
+          ) {
+            const localStr = new Date(
+              date.toLocaleString('en-US', { timeZone: TIMEZONE }),
+            ).getTime();
+            const utcStr = date.getTime();
+            date = new Date(utcStr + (utcStr - localStr));
+          }
           if (isNaN(date.getTime())) {
             logger.warn(
               { scheduleValue: data.schedule_value },
@@ -454,6 +488,40 @@ export async function processTaskIpc(
         logger.warn(
           { data },
           'Invalid register_group request - missing required fields',
+        );
+      }
+      break;
+
+    case 'host_op':
+      // Only main group can trigger host operations
+      if (!isMain) {
+        logger.warn(
+          { sourceGroup, op: data.op },
+          'Unauthorized host_op attempt blocked',
+        );
+        break;
+      }
+      if (data.op && isValidHostOp(data.op)) {
+        const result = await executeHostOp(data.op);
+        // Send result back to the requesting chat
+        const sourceJid = Object.entries(registeredGroups).find(
+          ([, g]) => g.folder === sourceGroup,
+        )?.[0];
+        if (sourceJid) {
+          const status = result.ok ? '✅' : '❌';
+          await deps.sendMessage(
+            sourceJid,
+            `${status} host_op \`${data.op}\`: ${result.message}`,
+          );
+        }
+        logger.info(
+          { op: data.op, ok: result.ok, sourceGroup },
+          'Host operation completed via IPC',
+        );
+      } else {
+        logger.warn(
+          { op: data.op, sourceGroup },
+          'Invalid host_op: unknown operation',
         );
       }
       break;

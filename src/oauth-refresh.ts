@@ -17,6 +17,16 @@ const CREDENTIALS_PATH = path.join(
   '.credentials.json',
 );
 
+// Claude Code OAuth client ID and scopes (from Claude CLI)
+const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+const OAUTH_SCOPES = [
+  'user:profile',
+  'user:inference',
+  'user:sessions:claude_code',
+  'user:mcp_servers',
+  'user:file_upload',
+];
+
 // Refresh 10 minutes before expiry
 const REFRESH_BUFFER_MS = 10 * 60 * 1000;
 // Check every 5 minutes
@@ -102,11 +112,13 @@ async function refreshToken(
     const postData = JSON.stringify({
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
+      client_id: OAUTH_CLIENT_ID,
+      scope: OAUTH_SCOPES.join(' '),
     });
 
     const req = https.request(
       {
-        hostname: 'console.anthropic.com',
+        hostname: 'platform.claude.com',
         path: '/v1/oauth/token',
         method: 'POST',
         headers: {
@@ -137,7 +149,10 @@ async function refreshToken(
               rateLimitTier: data.rate_limit_tier,
             });
           } catch (err) {
-            logger.error({ err, body: body.slice(0, 200) }, 'Failed to parse refresh response');
+            logger.error(
+              { err, body: body.slice(0, 200) },
+              'Failed to parse refresh response',
+            );
             resolve(null);
           }
         });
@@ -191,7 +206,10 @@ async function checkAndRefresh(): Promise<void> {
     updateEnvToken(newCreds.accessToken);
 
     const hoursUntil = ((newCreds.expiresAt - Date.now()) / 3600000).toFixed(1);
-    logger.info({ expiresInHours: hoursUntil }, 'OAuth token refreshed successfully');
+    logger.info(
+      { expiresInHours: hoursUntil },
+      'OAuth token refreshed successfully',
+    );
     lastNotifiedExpiry = 0; // Reset notification flag
   } else {
     // Refresh failed — notify user
@@ -206,7 +224,7 @@ async function checkAndRefresh(): Promise<void> {
         `*To re-authenticate:*\n` +
         `1. SSH into the server\n` +
         `2. Run: \`claude login\`\n` +
-        `3. Then: \`cd ~/NanoClaw && python3 -c "import json; f=open('/home/nanoclaw/.claude/.credentials.json'); d=json.load(f); o=json.loads(d['claudeAiOauth']); print(o['accessToken'])" | xargs -I{} sed -i 's/^CLAUDE_OAUTH_TOKEN=.*/CLAUDE_OAUTH_TOKEN={}/' .env\`\n` +
+        `3. Then: \`cd ~/NanoClaw && python3 -c "import json; d=json.load(open('/home/nanoclaw/.claude/.credentials.json')); o=d['claudeAiOauth'] if isinstance(d['claudeAiOauth'],dict) else json.loads(d['claudeAiOauth']); print(o['accessToken'])" | xargs -I{} sed -i 's/^CLAUDE_OAUTH_TOKEN=.*/CLAUDE_OAUTH_TOKEN={}/' .env\`\n` +
         `4. Restart: \`systemctl --user restart nanoclaw\``;
 
       notifyFn(message).catch((err) =>

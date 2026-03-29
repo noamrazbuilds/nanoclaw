@@ -705,8 +705,9 @@ async function runAgent(
             `⚠️ *Authentication Error*\n\nThe Claude Max OAuth token appears to be expired or invalid. ` +
               `NanoClaw will try to auto-refresh, but if this keeps happening, re-authenticate:\n` +
               `1. SSH into the server\n` +
-              `2. Run \`claude login\`\n` +
-              `3. Restart: \`systemctl --user restart nanoclaw\``,
+              `2. Run: \`claude login\`\n` +
+              `3. Then: \`cd ~/NanoClaw && python3 -c "import json; d=json.load(open('/home/nanoclaw/.claude/.credentials.json')); o=d['claudeAiOauth'] if isinstance(d['claudeAiOauth'],dict) else json.loads(d['claudeAiOauth']); print(o['accessToken'])" | xargs -I{} sed -i 's/^CLAUDE_OAUTH_TOKEN=.*/CLAUDE_OAUTH_TOKEN={}/' .env\`\n` +
+              `4. Restart: \`systemctl --user restart nanoclaw\``,
           ).catch(() => {});
         }
       }
