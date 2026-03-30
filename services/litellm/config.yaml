@@ -53,6 +53,11 @@ model_list:
       model: openai/o3
       api_key: os.environ/OPENAI_API_KEY
 
+  - model_name: dall-e-3
+    litellm_params:
+      model: openai/dall-e-3
+      api_key: os.environ/OPENAI_API_KEY
+
   # ── Google Gemini ───────────────────────────────────────────
   - model_name: gemini-2.5-flash
     litellm_params:
@@ -63,6 +68,17 @@ model_list:
     litellm_params:
       model: gemini/gemini-2.5-pro
       api_key: os.environ/GOOGLE_API_KEY
+
+  # ── fal.ai (Flux + Ideogram) ────────────────────────────────
+  - model_name: flux-pro
+    litellm_params:
+      model: fal_ai/fal-ai/flux-pro/v1.1-ultra
+      api_key: os.environ/FAL_AI_API_KEY
+
+  - model_name: ideogram-v3
+    litellm_params:
+      model: fal_ai/ideogram/v3
+      api_key: os.environ/FAL_AI_API_KEY
 
   # ── Local Ollama ────────────────────────────────────────────
   # Uncomment when Ollama is running locally
