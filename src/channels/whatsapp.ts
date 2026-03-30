@@ -265,6 +265,41 @@ export class WhatsAppChannel implements Channel {
             }
           }
 
+          // DOCX attachment handling
+          const docMimetype = normalized?.documentMessage?.mimetype || '';
+          const docFileName = normalized?.documentMessage?.fileName || '';
+          if (
+            docMimetype ===
+              'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+            (docMimetype !== 'application/pdf' &&
+              docFileName.toLowerCase().endsWith('.docx'))
+          ) {
+            try {
+              const buffer = await downloadMediaMessage(msg, 'buffer', {});
+              const groupDir = path.join(GROUPS_DIR, groups[chatJid].folder);
+              const attachDir = path.join(groupDir, 'attachments');
+              fs.mkdirSync(attachDir, { recursive: true });
+              const filename = path.basename(
+                docFileName || `doc-${Date.now()}.docx`,
+              );
+              const filePath = path.join(attachDir, filename);
+              fs.writeFileSync(filePath, buffer as Buffer);
+              const sizeKB = Math.round((buffer as Buffer).length / 1024);
+              const caption = normalized.documentMessage?.caption || '';
+              const docRef = `[DOCX: attachments/${filename} (${sizeKB}KB)]`;
+              content = caption ? `${caption}\n\n${docRef}` : docRef;
+              logger.info(
+                { jid: chatJid, filename },
+                'Downloaded DOCX attachment',
+              );
+            } catch (err) {
+              logger.warn(
+                { err, jid: chatJid },
+                'Failed to download DOCX attachment',
+              );
+            }
+          }
+
           // Image attachment handling
           if (isImageMessage(msg)) {
             try {
