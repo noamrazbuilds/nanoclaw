@@ -51,7 +51,12 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
-import { findChannel, formatMessages, formatOutbound } from './router.js';
+import {
+  findChannel,
+  formatMessages,
+  formatOutbound,
+  routeAudio,
+} from './router.js';
 import { ChannelType } from './text-styles.js';
 import {
   restoreRemoteControl,
@@ -1102,6 +1107,8 @@ async function main(): Promise<void> {
       if (!text) return Promise.resolve();
       return channel.sendMessage(jid, text);
     },
+    sendAudio: (jid, audioPath, caption) =>
+      routeAudio(channels, jid, audioPath, caption),
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroups: async (force: boolean) => {

@@ -417,6 +417,23 @@ export class WhatsAppChannel implements Channel {
     }
   }
 
+  async sendAudio(
+    jid: string,
+    audioPath: string,
+    caption?: string,
+  ): Promise<void> {
+    const buffer = fs.readFileSync(audioPath);
+    await this.sock.sendMessage(jid, {
+      audio: buffer,
+      mimetype: 'audio/ogg; codecs=opus',
+      ptt: true,
+    });
+    if (caption) {
+      await this.sendMessage(jid, caption);
+    }
+    logger.info({ jid, audioPath }, 'Audio voice note sent');
+  }
+
   isConnected(): boolean {
     return this.connected;
   }

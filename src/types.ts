@@ -96,6 +96,8 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: send audio as a voice note.
+  sendAudio?(jid: string, audioPath: string, caption?: string): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages

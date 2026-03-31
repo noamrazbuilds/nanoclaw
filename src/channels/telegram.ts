@@ -1,5 +1,6 @@
+import fs from 'fs';
 import https from 'https';
-import { Api, Bot } from 'grammy';
+import { Api, Bot, InputFile } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
@@ -380,6 +381,20 @@ export class TelegramChannel implements Channel {
 
   ownsJid(jid: string): boolean {
     return jid.startsWith('tg:');
+  }
+
+  async sendAudio(
+    jid: string,
+    audioPath: string,
+    caption?: string,
+  ): Promise<void> {
+    if (!this.bot) throw new Error('Telegram bot not connected');
+    const chatId = jid.replace('tg:', '');
+    const file = new InputFile(fs.readFileSync(audioPath));
+    await this.bot.api.sendVoice(chatId, file, {
+      ...(caption ? { caption } : {}),
+    });
+    logger.info({ jid, audioPath }, 'Telegram voice note sent');
   }
 
   async disconnect(): Promise<void> {
