@@ -30,8 +30,8 @@ const OAUTH_SCOPES = [
   'user:file_upload',
 ];
 
-// Refresh 10 minutes before expiry
-const REFRESH_BUFFER_MS = 10 * 60 * 1000;
+// Refresh 30 minutes before expiry (allows retries if tunnel is temporarily down)
+const REFRESH_BUFFER_MS = 30 * 60 * 1000;
 // Check every 5 minutes
 const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -137,40 +137,37 @@ async function refreshToken(
       requestOptions.agent = new SocksProxyAgent(OAUTH_PROXY_URL);
     }
 
-    const req = https.request(
-      requestOptions,
-      (res) => {
-        let body = '';
-        res.on('data', (chunk) => (body += chunk));
-        res.on('end', () => {
-          if (res.statusCode !== 200) {
-            logger.error(
-              { statusCode: res.statusCode, body: body.slice(0, 500) },
-              'OAuth token refresh failed',
-            );
-            resolve(null);
-            return;
-          }
-          try {
-            const data = JSON.parse(body);
-            resolve({
-              accessToken: data.access_token,
-              refreshToken: data.refresh_token || refreshToken,
-              expiresAt: Date.now() + (data.expires_in || 3600) * 1000,
-              scopes: data.scopes,
-              subscriptionType: data.subscription_type,
-              rateLimitTier: data.rate_limit_tier,
-            });
-          } catch (err) {
-            logger.error(
-              { err, body: body.slice(0, 200) },
-              'Failed to parse refresh response',
-            );
-            resolve(null);
-          }
-        });
-      },
-    );
+    const req = https.request(requestOptions, (res) => {
+      let body = '';
+      res.on('data', (chunk) => (body += chunk));
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          logger.error(
+            { statusCode: res.statusCode, body: body.slice(0, 500) },
+            'OAuth token refresh failed',
+          );
+          resolve(null);
+          return;
+        }
+        try {
+          const data = JSON.parse(body);
+          resolve({
+            accessToken: data.access_token,
+            refreshToken: data.refresh_token || refreshToken,
+            expiresAt: Date.now() + (data.expires_in || 3600) * 1000,
+            scopes: data.scopes,
+            subscriptionType: data.subscription_type,
+            rateLimitTier: data.rate_limit_tier,
+          });
+        } catch (err) {
+          logger.error(
+            { err, body: body.slice(0, 200) },
+            'Failed to parse refresh response',
+          );
+          resolve(null);
+        }
+      });
+    });
 
     req.on('error', (err) => {
       logger.error({ err }, 'OAuth refresh request error');
@@ -211,7 +208,19 @@ async function checkAndRefresh(): Promise<void> {
     'OAuth token expiring soon, attempting refresh',
   );
 
-  const newCreds = await refreshToken(creds.refreshToken);
+  // Retry up to 3 times with 30s gaps (tunnel may be temporarily down)
+  let newCreds: OAuthCredentials | null = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    newCreds = await refreshToken(creds.refreshToken);
+    if (newCreds) break;
+    if (attempt < 3) {
+      logger.warn(
+        { attempt },
+        'OAuth refresh failed, retrying in 30s',
+      );
+      await new Promise((r) => setTimeout(r, 30_000));
+    }
+  }
 
   if (newCreds) {
     // Update credentials file and .env
