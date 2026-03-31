@@ -9,6 +9,9 @@ import fs from 'fs';
 import path from 'path';
 import https from 'https';
 
+import { SocksProxyAgent } from 'socks-proxy-agent';
+
+import { OAUTH_PROXY_URL } from './config.js';
 import { logger } from './logger.js';
 
 const CREDENTIALS_PATH = path.join(
@@ -119,16 +122,23 @@ async function refreshToken(
       scope: OAUTH_SCOPES.join(' '),
     });
 
-    const req = https.request(
-      {
-        hostname: 'platform.claude.com',
-        path: '/v1/oauth/token',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData),
-        },
+    const requestOptions: https.RequestOptions = {
+      hostname: 'platform.claude.com',
+      path: '/v1/oauth/token',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData),
       },
+    };
+
+    // Route through SOCKS5 proxy when configured (bypasses Cloudflare datacenter IP blocks)
+    if (OAUTH_PROXY_URL) {
+      requestOptions.agent = new SocksProxyAgent(OAUTH_PROXY_URL);
+    }
+
+    const req = https.request(
+      requestOptions,
       (res) => {
         let body = '';
         res.on('data', (chunk) => (body += chunk));

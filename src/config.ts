@@ -9,8 +9,11 @@ const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
   'CLAUDE_OAUTH_TOKEN',
+  'ELEVENLABS_API_KEY',
+  'ELEVENLABS_VOICE_ID',
   'LITELLM_API_KEY',
   'LITELLM_PROXY_URL',
+  'OAUTH_PROXY_URL',
   'ONECLI_URL',
   'TELEGRAM_BOT_POOL',
   'TZ',
@@ -86,6 +89,16 @@ export const LITELLM_API_KEY =
 // This is mutually exclusive with OneCLI API key injection.
 export const CLAUDE_OAUTH_TOKEN =
   process.env.CLAUDE_OAUTH_TOKEN || envConfig.CLAUDE_OAUTH_TOKEN || '';
+
+// ElevenLabs TTS (for /speak skill with Dude voice)
+export const ELEVENLABS_API_KEY =
+  process.env.ELEVENLABS_API_KEY || envConfig.ELEVENLABS_API_KEY || '';
+export const ELEVENLABS_VOICE_ID =
+  process.env.ELEVENLABS_VOICE_ID || envConfig.ELEVENLABS_VOICE_ID || '';
+
+// SOCKS5 proxy for OAuth token refresh (bypasses Cloudflare datacenter IP blocks)
+export const OAUTH_PROXY_URL =
+  process.env.OAUTH_PROXY_URL || envConfig.OAUTH_PROXY_URL || '';
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
