@@ -58,6 +58,16 @@ model_list:
       model: openai/dall-e-3
       api_key: os.environ/OPENAI_API_KEY
 
+  - model_name: tts-1
+    litellm_params:
+      model: openai/tts-1
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: tts-1-hd
+    litellm_params:
+      model: openai/tts-1-hd
+      api_key: os.environ/OPENAI_API_KEY
+
   # ── Google Gemini ───────────────────────────────────────────
   - model_name: gemini-2.5-flash
     litellm_params:

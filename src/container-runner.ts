@@ -11,6 +11,8 @@ import {
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
   DATA_DIR,
+  ELEVENLABS_API_KEY,
+  ELEVENLABS_VOICE_ID,
   GROUPS_DIR,
   IDLE_TIMEOUT,
   LITELLM_API_KEY,
@@ -292,6 +294,21 @@ async function buildContainerArgs(
     args.push('-e', `ANTHROPIC_BASE_URL=${LITELLM_PROXY_URL}`);
     if (LITELLM_API_KEY) {
       args.push('-e', `ANTHROPIC_AUTH_TOKEN=${LITELLM_API_KEY}`);
+    }
+  }
+
+  // LiteLLM direct access: pass key and host so container skills (e.g., /triangulate)
+  // can call non-Claude models via curl without needing ANTHROPIC_BASE_URL routing
+  if (LITELLM_API_KEY) {
+    args.push('-e', `LITELLM_API_KEY=${LITELLM_API_KEY}`);
+    args.push('-e', 'LITELLM_HOST=http://host.docker.internal:4000');
+  }
+
+  // ElevenLabs TTS for /speak skill
+  if (ELEVENLABS_API_KEY) {
+    args.push('-e', `ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}`);
+    if (ELEVENLABS_VOICE_ID) {
+      args.push('-e', `ELEVENLABS_VOICE_ID=${ELEVENLABS_VOICE_ID}`);
     }
   }
 
