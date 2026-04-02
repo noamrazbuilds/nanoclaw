@@ -325,7 +325,10 @@ export class TelegramChannel implements Channel {
           ? `[Voice: ${transcript}]`
           : '[Voice message - transcription unavailable]';
 
-        logger.info({ chatJid, bytes: buffer.length }, 'Telegram voice transcribed');
+        logger.info(
+          { chatJid, bytes: buffer.length },
+          'Telegram voice transcribed',
+        );
         storeNonText(ctx, content);
       } catch (err) {
         logger.error({ chatJid, err }, 'Telegram voice transcription error');
@@ -350,12 +353,14 @@ export class TelegramChannel implements Channel {
 
         // Download file bytes
         const buffer = await new Promise<Buffer>((resolve, reject) => {
-          https.get(fileUrl, (res) => {
-            const chunks: Buffer[] = [];
-            res.on('data', (chunk: Buffer) => chunks.push(chunk));
-            res.on('end', () => resolve(Buffer.concat(chunks)));
-            res.on('error', reject);
-          }).on('error', reject);
+          https
+            .get(fileUrl, (res) => {
+              const chunks: Buffer[] = [];
+              res.on('data', (chunk: Buffer) => chunks.push(chunk));
+              res.on('end', () => resolve(Buffer.concat(chunks)));
+              res.on('error', reject);
+            })
+            .on('error', reject);
         });
 
         const groupDir = path.join(GROUPS_DIR, group.folder);

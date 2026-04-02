@@ -55,7 +55,9 @@ async function transcribeWithOpenAI(buffer: Buffer): Promise<string | null> {
   const apiKey = env.OPENAI_API_KEY;
 
   if (!apiKey) {
-    console.warn('OPENAI_API_KEY not set — OpenAI transcription fallback unavailable');
+    console.warn(
+      'OPENAI_API_KEY not set — OpenAI transcription fallback unavailable',
+    );
     return null;
   }
 
