@@ -472,6 +472,9 @@ async function runQuery(
     log('Model delegation enabled — opus-agent, sonnet-agent, haiku-agent available');
   }
 
+  // Write chat JID to IPC so skills (e.g. /speak) can read it for audio routing
+  fs.writeFileSync('/workspace/ipc/current_chat_jid', containerInput.chatJid);
+
   for await (const message of query({
     prompt: stream,
     options: {

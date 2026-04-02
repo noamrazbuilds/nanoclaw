@@ -64,7 +64,7 @@ Environment variables are already set: `$LITELLM_HOST`, `$LITELLM_API_KEY`, `$EL
 
 Write an IPC message to send the audio as a voice note:
 ```bash
-CHAT_JID=$(cat /workspace/ipc/current_chat_jid 2>/dev/null || echo "")
+CHAT_JID=$(cat /workspace/ipc/current_chat_jid 2>/dev/null || echo "$NANOCLAW_CHAT_JID")
 cat > "/workspace/ipc/messages/speak-$(date +%s%N).json" << EOF
 {
   "type": "audio",
@@ -90,7 +90,7 @@ python3 /home/node/.claude/skills/speak/scripts/tts.py \
 cat > "/workspace/ipc/messages/speak-$(date +%s%N).json" << EOF
 {
   "type": "audio",
-  "chatJid": "$(cat /workspace/ipc/current_chat_jid 2>/dev/null)",
+  "chatJid": "$(cat /workspace/ipc/current_chat_jid 2>/dev/null || echo $NANOCLAW_CHAT_JID)",
   "filePath": "$OUTPUT_FILE"
 }
 EOF

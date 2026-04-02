@@ -56,7 +56,13 @@ BACKUP_PATHS=(
   "$PROJECT_ROOT/groups"                                                # Channel memory, CLAUDE.md, preferences
   "$PROJECT_ROOT/store"                                                 # SQLite database (messages, tasks, groups)
   "$PROJECT_ROOT/data/memory-backups"                                   # Local memory backup snapshots
-  "/home/nanoclaw/.claude/projects/-home-nanoclaw-NanoClaw/memory"      # Claude Code project memory
+  "/home/nanoclaw/.claude/projects/-home-nanoclaw-NanoClaw/memory"      # Claude Code project memory (NanoClaw)
+  "/home/nanoclaw/pka/vault"                                            # PKA — all notes (markdown)
+  "/home/nanoclaw/pka/db/pka.db"                                        # PKA — synced metadata database
+  "/home/nanoclaw/pka/pipeline"                                         # PKA — session pipeline records + onboarding state
+  "/home/nanoclaw/pka/MEMORY.md"                                        # PKA — living memory index
+  "/home/nanoclaw/pka/HEARTBEAT.md"                                     # PKA — system health
+  "/home/nanoclaw/.claude/projects/-home-nanoclaw-pka/memory"           # Claude Code project memory (PKA)
 )
 
 # What to exclude

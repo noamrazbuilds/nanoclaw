@@ -2,9 +2,12 @@ import fs from 'fs';
 import https from 'https';
 import { Api, Bot, InputFile } from 'grammy';
 
-import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import path from 'path';
+
+import { ASSISTANT_NAME, GROUPS_DIR, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
+import { transcribeAudioBuffer } from '../transcription.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
@@ -294,13 +297,97 @@ export class TelegramChannel implements Channel {
 
     this.bot.on('message:photo', (ctx: any) => storeNonText(ctx, '[Photo]'));
     this.bot.on('message:video', (ctx: any) => storeNonText(ctx, '[Video]'));
-    this.bot.on('message:voice', (ctx: any) =>
-      storeNonText(ctx, '[Voice message]'),
-    );
+    this.bot.on('message:voice', async (ctx: any) => {
+      const fileId = ctx.message?.voice?.file_id;
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+
+      if (!fileId || !group) {
+        storeNonText(ctx, '[Voice message]');
+        return;
+      }
+
+      try {
+        const file = await ctx.api.getFile(fileId);
+        const fileUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+
+        const buffer = await new Promise<Buffer>((resolve, reject) => {
+          https.get(fileUrl, (res) => {
+            const chunks: Buffer[] = [];
+            res.on('data', (chunk: Buffer) => chunks.push(chunk));
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+            res.on('error', reject);
+          });
+        });
+
+        const transcript = await transcribeAudioBuffer(buffer);
+        const content = transcript
+          ? `[Voice: ${transcript}]`
+          : '[Voice message - transcription unavailable]';
+
+        logger.info({ chatJid, bytes: buffer.length }, 'Telegram voice transcribed');
+        storeNonText(ctx, content);
+      } catch (err) {
+        logger.error({ chatJid, err }, 'Telegram voice transcription error');
+        storeNonText(ctx, '[Voice message]');
+      }
+    });
     this.bot.on('message:audio', (ctx: any) => storeNonText(ctx, '[Audio]'));
-    this.bot.on('message:document', (ctx: any) => {
-      const name = ctx.message.document?.file_name || 'file';
-      storeNonText(ctx, `[Document: ${name}]`);
+    this.bot.on('message:document', async (ctx: any) => {
+      const doc = ctx.message.document;
+      const name = doc?.file_name || 'file';
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+
+      if (!group || !doc?.file_id) {
+        storeNonText(ctx, `[Document: ${name}]`);
+        return;
+      }
+
+      try {
+        const file = await ctx.api.getFile(doc.file_id);
+        const fileUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+
+        // Download file bytes
+        const buffer = await new Promise<Buffer>((resolve, reject) => {
+          https.get(fileUrl, (res) => {
+            const chunks: Buffer[] = [];
+            res.on('data', (chunk: Buffer) => chunks.push(chunk));
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+            res.on('error', reject);
+          }).on('error', reject);
+        });
+
+        const groupDir = path.join(GROUPS_DIR, group.folder);
+        const attachDir = path.join(groupDir, 'attachments');
+        fs.mkdirSync(attachDir, { recursive: true });
+        const filename = name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const filePath = path.join(attachDir, filename);
+        fs.writeFileSync(filePath, buffer);
+        const sizeKB = Math.round(buffer.length / 1024);
+
+        const ext = path.extname(filename).toLowerCase();
+        let placeholder: string;
+        if (ext === '.pdf') {
+          placeholder = `[PDF: attachments/${filename} (${sizeKB}KB)]\nUse: pdf-reader extract attachments/${filename}`;
+        } else if (ext === '.docx' || ext === '.doc') {
+          placeholder = `[DOCX: attachments/${filename} (${sizeKB}KB)]`;
+        } else {
+          placeholder = `[File: attachments/${filename} (${sizeKB}KB)]`;
+        }
+
+        logger.info(
+          { chatJid, filename, sizeKB },
+          'Downloaded Telegram document attachment',
+        );
+        storeNonText(ctx, placeholder);
+      } catch (err) {
+        logger.error(
+          { chatJid, filename: name, err },
+          'Failed to download Telegram document',
+        );
+        storeNonText(ctx, `[Document: ${name}]`);
+      }
     });
     this.bot.on('message:sticker', (ctx: any) => {
       const emoji = ctx.message.sticker?.emoji || '';

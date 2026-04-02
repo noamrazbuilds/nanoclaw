@@ -414,3 +414,52 @@ If a user wants tasks running more than ~2x daily and a script can't reduce agen
 - Suggest restructuring with a script that checks the condition first
 - If the user needs an LLM to evaluate data, suggest using an API key with direct Anthropic API calls inside the script
 - Help the user find the minimum viable frequency
+
+---
+
+## reMarkable Tablet
+
+Noam has a reMarkable Paper Pro tablet. You can push content to it and his handwritten notes sync automatically into his PKA vault.
+
+### Pushing content to the tablet
+
+To send a PDF to Noam's reMarkable:
+
+1. Generate or obtain a PDF file
+2. Save it to `/workspace/extra/pka/remarkable-outbox/<filename>.pdf`
+3. Optionally create a sidecar `/workspace/extra/pka/remarkable-outbox/<filename>.json`:
+   ```json
+   { "folder": "/01 Personal" }
+   ```
+   Without a sidecar, the file lands in the root `/`.
+4. A host cron runs every 5 minutes and pushes anything in the outbox automatically.
+
+**Generating a PDF from content:**
+```bash
+# From markdown using pandoc (if available):
+pandoc content.md -o /workspace/extra/pka/remarkable-outbox/output.pdf
+
+# Simple text → PDF via Python reportlab:
+python3 -c "
+from reportlab.pdfgen import canvas
+c = canvas.Canvas('/workspace/extra/pka/remarkable-outbox/output.pdf')
+c.drawString(72, 750, 'Your content here')
+c.save()
+"
+```
+
+Tell Noam the file has been queued and will appear on his tablet within 5 minutes.
+
+### Handwritten notes (automatic)
+
+Noam's handwritten notes sync from his reMarkable to PKA automatically (hourly). They appear in the vault tagged `remarkable/handwritten` and are fully searchable. You don't need to do anything special — just use PKA search normally.
+
+### reMarkable folder structure
+
+```
+/00 Wiz        — work notebooks
+/01 Personal   — personal notebooks
+/02 Ebooks     — reference ebooks (not synced to PKA)
+/03 Dogs       — dog training docs (not synced to PKA)
+/Bullet Journal, /Quick notes, /Commonplace Book 5785 — top-level notebooks
+```

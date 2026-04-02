@@ -47,8 +47,6 @@ interface OAuthCredentials {
 let notifyFn: ((message: string) => Promise<void>) | null = null;
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 let lastNotifiedExpiry = 0;
-// In-memory cache of the latest valid access token (updated by refresh cycle)
-let cachedAccessToken: string | null = null;
 
 /**
  * Read OAuth credentials from the Claude credentials file.
@@ -79,7 +77,7 @@ function writeCredentials(creds: OAuthCredentials): void {
     const data = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf-8'));
     data.claudeAiOauth = JSON.stringify(creds);
     fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(data));
-    cachedAccessToken = creds.accessToken;
+    // Token written to credentials file (read fresh by getOAuthToken)
   } catch (err) {
     logger.error({ err }, 'Failed to write updated OAuth credentials');
   }
@@ -214,10 +212,7 @@ async function checkAndRefresh(): Promise<void> {
     newCreds = await refreshToken(creds.refreshToken);
     if (newCreds) break;
     if (attempt < 3) {
-      logger.warn(
-        { attempt },
-        'OAuth refresh failed, retrying in 30s',
-      );
+      logger.warn({ attempt }, 'OAuth refresh failed, retrying in 30s');
       await new Promise((r) => setTimeout(r, 30_000));
     }
   }
@@ -297,17 +292,13 @@ export function startOAuthRefreshMonitor(
 }
 
 /**
- * Get the latest OAuth access token. Prefers the in-memory cached token
- * (kept fresh by the refresh monitor), falls back to reading credentials file.
- * Returns empty string if no token is available.
+ * Get the latest OAuth access token. Always reads fresh from the credentials
+ * file so that externally-refreshed tokens (NAS push, manual update) are
+ * picked up immediately without needing a process restart.
  */
 export function getOAuthToken(): string {
-  if (cachedAccessToken) return cachedAccessToken;
-
-  // Fallback: read from credentials file (cold start before first refresh)
   const creds = readCredentials();
   if (creds?.accessToken) {
-    cachedAccessToken = creds.accessToken;
     return creds.accessToken;
   }
   return '';
