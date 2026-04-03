@@ -33,6 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     libdrm2 \
     libxshmfence1 \
     curl \
+    espeak-ng \
     espeak-ng-data \
     ffmpeg \
     git \
