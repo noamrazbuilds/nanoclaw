@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Text-to-Speech script for NanoClaw /speak skill.
-Supports: local (Piper), openai, elevenlabs backends.
+Supports: local (Piper), openai, elevenlabs, robotic (eSpeak-NG) backends.
 
 Usage:
   python3 tts.py --text "Hello world" --backend local --output /tmp/out.opus
@@ -153,10 +153,45 @@ def tts_elevenlabs(text: str, output_path: str) -> None:
             os.unlink(mp3_path)
 
 
+def tts_espeak(text: str, output_path: str) -> None:
+    """Generate robotic speech using eSpeak-NG."""
+    lang = os.environ.get("ESPEAK_LANG", "he")
+    speed = os.environ.get("ESPEAK_SPEED", "150")  # words per minute; lower = slower/more robotic
+    pitch = os.environ.get("ESPEAK_PITCH", "50")   # 0-99
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav:
+        wav_path = wav.name
+
+    try:
+        proc = subprocess.run(
+            ["espeak-ng", "-v", lang, "-s", speed, "-p", pitch, text, "-w", wav_path],
+            capture_output=True,
+            timeout=60,
+        )
+        if proc.returncode != 0:
+            print(f"eSpeak error: {proc.stderr.decode()}", file=sys.stderr)
+            sys.exit(1)
+
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", wav_path,
+                "-c:a", "libopus", "-b:a", "48k",
+                "-application", "voip",
+                output_path,
+            ],
+            capture_output=True,
+            timeout=60,
+        )
+    finally:
+        if os.path.exists(wav_path):
+            os.unlink(wav_path)
+
+
 BACKENDS = {
     "local": tts_piper,
     "openai": tts_openai,
     "elevenlabs": tts_elevenlabs,
+    "robotic": tts_espeak,
 }
 
 
@@ -166,7 +201,7 @@ def main():
     parser.add_argument("--file", help="File to read and speak")
     parser.add_argument(
         "--backend",
-        choices=["local", "openai", "elevenlabs"],
+        choices=["local", "openai", "elevenlabs", "robotic"],
         default="local",
     )
     parser.add_argument("--output", required=True, help="Output .opus path")
