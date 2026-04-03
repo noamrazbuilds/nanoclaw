@@ -295,7 +295,48 @@ export class TelegramChannel implements Channel {
       });
     };
 
-    this.bot.on('message:photo', (ctx: any) => storeNonText(ctx, '[Photo]'));
+    this.bot.on('message:photo', async (ctx: any) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      const photos: any[] = ctx.message?.photo || [];
+      // Telegram sends multiple sizes; last is highest resolution
+      const photo = photos[photos.length - 1];
+
+      if (!group || !photo?.file_id) {
+        storeNonText(ctx, '[Photo]');
+        return;
+      }
+
+      try {
+        const file = await ctx.api.getFile(photo.file_id);
+        const fileUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+
+        const buffer = await new Promise<Buffer>((resolve, reject) => {
+          https
+            .get(fileUrl, (res) => {
+              const chunks: Buffer[] = [];
+              res.on('data', (chunk: Buffer) => chunks.push(chunk));
+              res.on('end', () => resolve(Buffer.concat(chunks)));
+              res.on('error', reject);
+            })
+            .on('error', reject);
+        });
+
+        const groupDir = path.join(GROUPS_DIR, group.folder);
+        const attachDir = path.join(groupDir, 'attachments');
+        fs.mkdirSync(attachDir, { recursive: true });
+        const filename = `photo_${ctx.message.message_id}.jpg`;
+        const filePath = path.join(attachDir, filename);
+        fs.writeFileSync(filePath, buffer);
+        const sizeKB = Math.round(buffer.length / 1024);
+
+        logger.info({ chatJid, filename, sizeKB }, 'Downloaded Telegram photo');
+        storeNonText(ctx, `[Photo: attachments/${filename} (${sizeKB}KB)]`);
+      } catch (err) {
+        logger.error({ chatJid, err }, 'Failed to download Telegram photo');
+        storeNonText(ctx, '[Photo]');
+      }
+    });
     this.bot.on('message:video', (ctx: any) => storeNonText(ctx, '[Video]'));
     this.bot.on('message:voice', async (ctx: any) => {
       const fileId = ctx.message?.voice?.file_id;
