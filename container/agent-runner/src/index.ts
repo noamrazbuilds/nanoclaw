@@ -288,6 +288,70 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
 }
 
 /**
+ * Archive the transcript to conversations/ on session exit.
+ * Skips if PreCompact already archived recently (filesystem-based dedup).
+ */
+function archiveTranscriptOnExit(
+  sessionId: string | undefined,
+  assistantName: string | undefined,
+  incomplete: boolean,
+): void {
+  try {
+    if (!sessionId) {
+      log('No session ID, skipping exit transcript archive');
+      return;
+    }
+
+    const transcriptPath = `/home/node/.claude/projects/-workspace-group/${sessionId}.jsonl`;
+    if (!fs.existsSync(transcriptPath)) {
+      log(`No transcript file at ${transcriptPath}, skipping`);
+      return;
+    }
+
+    const conversationsDir = '/workspace/group/conversations';
+    fs.mkdirSync(conversationsDir, { recursive: true });
+
+    // Dedup: skip if a conversation file was written in the last 5 minutes
+    // (PreCompact already archived this session)
+    const recentThreshold = Date.now() - 5 * 60 * 1000;
+    try {
+      const existing = fs.readdirSync(conversationsDir);
+      for (const file of existing) {
+        if (!file.endsWith('.md')) continue;
+        const stat = fs.statSync(path.join(conversationsDir, file));
+        if (stat.mtimeMs > recentThreshold) {
+          log(`Recent conversation file found (${file}), skipping exit archive`);
+          return;
+        }
+      }
+    } catch { /* directory may not exist yet, continue */ }
+
+    const content = fs.readFileSync(transcriptPath, 'utf-8');
+    const messages = parseTranscript(content);
+
+    if (messages.length === 0) {
+      log('No messages in transcript, skipping exit archive');
+      return;
+    }
+
+    const date = new Date().toISOString().split('T')[0];
+    const name = incomplete ? 'incomplete-session' : generateFallbackName();
+    const filename = incomplete
+      ? `${date}-${name}.md`
+      : `${date}-${name}.md`;
+    const filePath = path.join(conversationsDir, filename);
+
+    const title = incomplete ? 'Conversation [incomplete]' : 'Conversation';
+    const markdown = formatTranscriptMarkdown(messages, title, assistantName);
+    fs.writeFileSync(filePath, markdown);
+
+    log(`Exit archive written to ${filePath} (incomplete=${incomplete})`);
+  } catch (err) {
+    log(`Failed to archive transcript on exit: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
  * Check for _close sentinel.
  */
 function shouldClose(): boolean {
@@ -472,8 +536,10 @@ async function runQuery(
     log('Model delegation enabled — opus-agent, sonnet-agent, haiku-agent available');
   }
 
-  // Write chat JID to IPC so skills (e.g. /speak) can read it for audio routing
+  // Write chat JID to IPC so skills (e.g. /speak) can read it for audio routing.
+  // Also set as env var for direct access in Bash commands.
   fs.writeFileSync('/workspace/ipc/current_chat_jid', containerInput.chatJid);
+  process.env.NANOCLAW_CHAT_JID = containerInput.chatJid;
 
   for await (const message of query({
     prompt: stream,
@@ -680,6 +746,16 @@ async function main(): Promise<void> {
     prompt = `[SCHEDULED TASK]\n\nScript output:\n${JSON.stringify(scriptResult.data, null, 2)}\n\nInstructions:\n${containerInput.prompt}`;
   }
 
+  // SIGTERM handler: archive transcript before Docker kills us
+  let sigTermHandled = false;
+  process.on('SIGTERM', () => {
+    if (sigTermHandled) return;
+    sigTermHandled = true;
+    log('SIGTERM received, archiving transcript before exit');
+    archiveTranscriptOnExit(sessionId, containerInput.assistantName, true);
+    process.exit(0);
+  });
+
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
   try {
@@ -723,9 +799,16 @@ async function main(): Promise<void> {
       log(`Got new message (${nextMessage.length} chars), starting new query`);
       prompt = nextMessage;
     }
+
+    // Clean exit: archive transcript if PreCompact didn't already
+    archiveTranscriptOnExit(sessionId, containerInput.assistantName, false);
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     log(`Agent error: ${errorMessage}`);
+
+    // Error exit: archive what we have, marked as incomplete
+    archiveTranscriptOnExit(sessionId, containerInput.assistantName, true);
+
     writeOutput({
       status: 'error',
       result: null,
