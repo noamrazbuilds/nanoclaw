@@ -362,3 +362,41 @@ Two local LLM models are available via the LiteLLM proxy (no API cost, runs on-s
 - **`local-general`** — `gemma3:4b`: good for general tasks, drafting, light reasoning
 
 Use these for lightweight or high-frequency tasks to reduce API spend. Ollama loads one at a time; there's a ~2–5s swap penalty when switching between them. Reference by model name anywhere a model is accepted (scheduled task `model` field, `/model` directive, etc.).
+
+---
+
+## PKA Inbox & Task Handling
+
+The PKA (Personal Knowledge Assistant) has an inbox classification and task management system. Users interact with it through natural-language messages from any channel.
+
+### Handling inbox review replies
+
+When the user sends a reply that looks like an inbox review response, route it through the PKA inbox router.
+
+**Recognize as inbox reply if message:**
+- Is exactly "ok" (and `/home/nanoclaw/pka/pending_inbox_reviews.json` exists)
+- Contains patterns like `1=ref`, `2=task`, `3=delete`, `4=project: X`, `1=task due friday`, `1=task urgent`
+
+**Steps:**
+1. Verify `/home/nanoclaw/pka/pending_inbox_reviews.json` exists
+2. Run: `python3 /home/nanoclaw/pka/scripts/inbox_route.py "<user reply>"`
+3. Report the script's output back to the user
+
+**Valid types:** task, ref, reference, project, journal, contact, delete, keep
+**Modifiers (for tasks):** `urgent`, `high`, `medium`, `low`, `due friday`, `due 2026-04-10`, `project: ProjectName`
+
+### Handling "done" commands
+
+When the user says `done: [task description]` or `done [N]`:
+
+1. For `done: [text]`: run `python3 /home/nanoclaw/pka/scripts/task_query.py --done "[text]"`
+2. For `done [N]` (number referring to a recently listed task): look up the task by position from the most recent task list shown, then use `--done` with its title or `--done-id` with its ID prefix
+3. Reply: "✓ Marked done: *[task title]*"
+
+### Handling task queries
+
+When the user asks about tasks ("what are my tasks?", "open tasks", "what's due?"):
+
+- Run `python3 /home/nanoclaw/pka/scripts/task_query.py --open` and format the JSON output as a readable list
+- For due-today queries: use `--due-today` instead
+- Group by priority, show due dates where set
