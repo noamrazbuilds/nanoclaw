@@ -18,6 +18,7 @@ sed \
   -e 's|groups/main/|groups/telegram_main/|' \
   -e 's/# The Dude — WhatsApp/# The Dude — Telegram/' \
   -e 's/You are The Dude, a personal assistant for Noam on WhatsApp./You are The Dude, a personal assistant for Noam on Telegram./' \
+  -e 's/Format using WhatsApp style/Format using Telegram style/' \
   "$SRC" > "$DST"
 
 echo "sync-telegram-claude-md: regenerated $DST from $SRC"
