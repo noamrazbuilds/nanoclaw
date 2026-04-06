@@ -8,7 +8,7 @@ import {
   getTaskById,
   setRegisteredGroup,
 } from './db.js';
-import { processTaskIpc, IpcDeps } from './ipc.js';
+import { processTaskIpc, IpcDeps, resetRateLimits } from './ipc.js';
 import { RegisteredGroup } from './types.js';
 
 // Set up registered groups used across tests
@@ -39,6 +39,7 @@ let deps: IpcDeps;
 
 beforeEach(() => {
   _initTestDatabase();
+  resetRateLimits();
 
   groups = {
     'main@g.us': MAIN_GROUP,

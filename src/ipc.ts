@@ -37,6 +37,49 @@ export interface IpcDeps {
   onTasksChanged: () => void;
 }
 
+// --- IPC Rate Limiting ---
+// Prevents a compromised agent from spamming messages or scheduling tasks
+
+interface RateBucket {
+  count: number;
+  resetAt: number;
+}
+
+const rateLimits: Record<string, Record<string, RateBucket>> = {};
+
+const RATE_LIMITS: Record<string, { max: number; windowMs: number }> = {
+  message: { max: 20, windowMs: 60_000 },         // 20 messages per minute per group
+  schedule_task: { max: 5, windowMs: 3_600_000 },  // 5 tasks per hour per group
+  host_op: { max: 3, windowMs: 3_600_000 },        // 3 host ops per hour
+  register_group: { max: 5, windowMs: 3_600_000 }, // 5 registrations per hour
+};
+
+/** Reset all rate limit buckets (for testing) */
+export function resetRateLimits(): void {
+  for (const key of Object.keys(rateLimits)) {
+    delete rateLimits[key];
+  }
+}
+
+function checkRateLimit(group: string, operation: string): boolean {
+  const limit = RATE_LIMITS[operation];
+  if (!limit) return true;
+
+  const key = `${group}:${operation}`;
+  if (!rateLimits[group]) rateLimits[group] = {};
+
+  const now = Date.now();
+  let bucket = rateLimits[group][operation];
+
+  if (!bucket || now >= bucket.resetAt) {
+    bucket = { count: 0, resetAt: now + limit.windowMs };
+    rateLimits[group][operation] = bucket;
+  }
+
+  bucket.count++;
+  return bucket.count <= limit.max;
+}
+
 let ipcWatcherRunning = false;
 
 export function startIpcWatcher(deps: IpcDeps): void {
@@ -115,6 +158,15 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   );
                 }
               } else if (data.type === 'message' && data.chatJid && data.text) {
+                // Rate limit check
+                if (!checkRateLimit(sourceGroup, 'message')) {
+                  logger.warn(
+                    { sourceGroup, chatJid: data.chatJid },
+                    'IPC message rate limited',
+                  );
+                  fs.unlinkSync(filePath);
+                  continue;
+                }
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];
                 if (
@@ -245,6 +297,14 @@ export async function processTaskIpc(
         data.schedule_value &&
         data.targetJid
       ) {
+        // Rate limit check
+        if (!checkRateLimit(sourceGroup, 'schedule_task')) {
+          logger.warn(
+            { sourceGroup },
+            'schedule_task rate limited',
+          );
+          break;
+        }
         // Resolve the target group from JID
         const targetJid = data.targetJid as string;
         const targetGroupEntry = registeredGroups[targetJid];
@@ -496,6 +556,14 @@ export async function processTaskIpc(
       break;
 
     case 'register_group':
+      // Rate limit check
+      if (!checkRateLimit(sourceGroup, 'register_group')) {
+        logger.warn(
+          { sourceGroup },
+          'register_group rate limited',
+        );
+        break;
+      }
       // Only main group can register new groups
       if (!isMain) {
         logger.warn(
@@ -535,6 +603,14 @@ export async function processTaskIpc(
         logger.warn(
           { sourceGroup, op: data.op },
           'Unauthorized host_op attempt blocked',
+        );
+        break;
+      }
+      // Rate limit check
+      if (!checkRateLimit(sourceGroup, 'host_op')) {
+        logger.warn(
+          { sourceGroup, op: data.op },
+          'host_op rate limited',
         );
         break;
       }

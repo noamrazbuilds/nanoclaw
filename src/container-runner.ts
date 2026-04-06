@@ -127,13 +127,14 @@ function buildVolumeMounts(
       readonly: false,
     });
 
-    // Global memory directory (read-write for cross-channel preference sync)
+    // Global memory directory (read-only for non-main groups to prevent
+    // cross-group poisoning of shared instructions and preferences)
     const globalDir = path.join(GROUPS_DIR, 'global');
     if (fs.existsSync(globalDir)) {
       mounts.push({
         hostPath: globalDir,
         containerPath: '/workspace/global',
-        readonly: false,
+        readonly: true,
       });
     }
   }

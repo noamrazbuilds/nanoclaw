@@ -34,6 +34,7 @@ const NONCE_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_OUTPUT_SIZE = 100 * 1024; // 100KB
 const GWS_CREDS_PATH = '/home/node/.config/gws/credentials.json';
 const GWS_CLIENT_PATH = '/home/node/.config/gws/client_secret.json';
+const IS_MAIN = process.env.NANOCLAW_IS_MAIN === '1';
 
 // --- Token management ---
 // gws expects encrypted credential storage which doesn't work in containers.
@@ -381,6 +382,30 @@ Examples:
 
     const classification = classifyOperation(command);
     const gwsArgs = parseCommand(command);
+
+    // Non-main groups cannot perform write operations (security: prevents
+    // indirect prompt injection in satellite groups from sending emails, etc.)
+    if (classification === 'write' && !IS_MAIN) {
+      writeAuditLog({
+        timestamp: new Date().toISOString(),
+        tool: 'gws_run',
+        command,
+        classification: 'write',
+        confirmed: false,
+        status: 'error',
+        duration_ms: Date.now() - start,
+        result_size: 0,
+        error: 'Write operations blocked for non-main groups',
+      });
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: 'GWS write operations are only available from the main group. Read operations (list, get, search, read) work normally.',
+        }],
+        isError: true,
+      };
+    }
 
     // Write operations require confirmation
     if (classification === 'write') {

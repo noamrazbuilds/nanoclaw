@@ -170,6 +170,17 @@ function updateAllowlist(args?: Record<string, unknown>): HostOpResult {
     }
 
     const chats = (config.chats || {}) as Record<string, unknown>;
+
+    // Log the before/after diff for security audit
+    const previousEntry = chats[chatJid]
+      ? JSON.stringify(chats[chatJid])
+      : '(new entry)';
+    const newEntry = JSON.stringify({ allow: senders, mode });
+    logger.info(
+      { chatJid, before: previousEntry, after: newEntry },
+      'Allowlist change audit',
+    );
+
     chats[chatJid] = { allow: senders, mode };
     config.chats = chats;
 
