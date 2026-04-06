@@ -416,6 +416,22 @@ Use these for lightweight or high-frequency tasks to reduce API spend. Ollama lo
 
 ---
 
+## PKA Database Rule
+
+**Any direct write to `pka.db` via sqlite3 must load the crsqlite extension and call `crsql_finalize()` before the session closes**, or it will leave prepared statements open:
+
+```bash
+sqlite3 /path/to/pka.db << 'EOF'
+.load /home/nanoclaw/pka/lib/crsqlite.so
+-- your INSERT/UPDATE here
+SELECT crsql_finalize();
+EOF
+```
+
+Read-only SELECTs do not need the extension.
+
+---
+
 ## PKA Inbox & Task Handling
 
 The PKA (Personal Knowledge Assistant) has an inbox classification and task management system. Users interact with it through natural-language messages from any channel.
