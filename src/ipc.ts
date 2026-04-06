@@ -48,9 +48,9 @@ interface RateBucket {
 const rateLimits: Record<string, Record<string, RateBucket>> = {};
 
 const RATE_LIMITS: Record<string, { max: number; windowMs: number }> = {
-  message: { max: 20, windowMs: 60_000 },         // 20 messages per minute per group
-  schedule_task: { max: 5, windowMs: 3_600_000 },  // 5 tasks per hour per group
-  host_op: { max: 3, windowMs: 3_600_000 },        // 3 host ops per hour
+  message: { max: 20, windowMs: 60_000 }, // 20 messages per minute per group
+  schedule_task: { max: 5, windowMs: 3_600_000 }, // 5 tasks per hour per group
+  host_op: { max: 3, windowMs: 3_600_000 }, // 3 host ops per hour
   register_group: { max: 5, windowMs: 3_600_000 }, // 5 registrations per hour
 };
 
@@ -299,10 +299,7 @@ export async function processTaskIpc(
       ) {
         // Rate limit check
         if (!checkRateLimit(sourceGroup, 'schedule_task')) {
-          logger.warn(
-            { sourceGroup },
-            'schedule_task rate limited',
-          );
+          logger.warn({ sourceGroup }, 'schedule_task rate limited');
           break;
         }
         // Resolve the target group from JID
@@ -558,10 +555,7 @@ export async function processTaskIpc(
     case 'register_group':
       // Rate limit check
       if (!checkRateLimit(sourceGroup, 'register_group')) {
-        logger.warn(
-          { sourceGroup },
-          'register_group rate limited',
-        );
+        logger.warn({ sourceGroup }, 'register_group rate limited');
         break;
       }
       // Only main group can register new groups
@@ -608,10 +602,7 @@ export async function processTaskIpc(
       }
       // Rate limit check
       if (!checkRateLimit(sourceGroup, 'host_op')) {
-        logger.warn(
-          { sourceGroup, op: data.op },
-          'host_op rate limited',
-        );
+        logger.warn({ sourceGroup, op: data.op }, 'host_op rate limited');
         break;
       }
       if (data.op && isValidHostOp(data.op)) {
@@ -635,6 +626,44 @@ export async function processTaskIpc(
         logger.warn(
           { op: data.op, sourceGroup },
           'Invalid host_op: unknown operation',
+        );
+      }
+      break;
+
+    case 'update_group_config':
+      // Only main group can update other groups' containerConfig
+      if (!isMain) {
+        logger.warn(
+          { sourceGroup, jid: data.jid },
+          'Unauthorized update_group_config attempt blocked',
+        );
+        break;
+      }
+      if (data.jid && data.containerConfig !== undefined) {
+        const existing = registeredGroups[data.jid];
+        if (!existing) {
+          logger.warn(
+            { jid: data.jid },
+            'update_group_config: group not registered',
+          );
+          break;
+        }
+        const updated: RegisteredGroup = {
+          ...existing,
+          containerConfig: {
+            ...existing.containerConfig,
+            ...data.containerConfig,
+          },
+        };
+        deps.registerGroup(data.jid, updated);
+        logger.info(
+          { jid: data.jid, containerConfig: data.containerConfig },
+          'Group containerConfig updated via IPC',
+        );
+      } else {
+        logger.warn(
+          { data },
+          'update_group_config: missing jid or containerConfig',
         );
       }
       break;

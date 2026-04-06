@@ -19,6 +19,7 @@ import {
   LITELLM_PROXY_URL,
   ONECLI_URL,
   TIMEZONE,
+  USE_OAUTH,
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
@@ -289,8 +290,8 @@ async function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  // LiteLLM proxy: when configured, route LLM traffic through the local proxy
-  // for multi-model support. The Agent SDK reads these env vars automatically.
+  // LiteLLM proxy: when configured, route ALL LLM traffic through the local proxy.
+  // Handles both Claude (via ANTHROPIC_API_KEY in LiteLLM) and non-Claude models.
   if (LITELLM_PROXY_URL) {
     args.push('-e', `ANTHROPIC_BASE_URL=${LITELLM_PROXY_URL}`);
     if (LITELLM_API_KEY) {
@@ -299,7 +300,7 @@ async function buildContainerArgs(
   }
 
   // LiteLLM direct access: pass key and host so container skills (e.g., /triangulate)
-  // can call non-Claude models via curl without needing ANTHROPIC_BASE_URL routing
+  // can call non-Claude models via curl without going through ANTHROPIC_BASE_URL routing
   if (LITELLM_API_KEY) {
     args.push('-e', `LITELLM_API_KEY=${LITELLM_API_KEY}`);
     args.push('-e', 'LITELLM_HOST=http://host.docker.internal:4000');
@@ -313,28 +314,46 @@ async function buildContainerArgs(
     }
   }
 
-  // Authentication: prefer Max subscription OAuth > OneCLI API key gateway
-  // Read token fresh each spawn so mid-process refreshes take effect immediately
-  const oauthToken = getOAuthToken();
-  if (oauthToken) {
-    // Max subscription: inject OAuth token so the Agent SDK bills against Max
-    // instead of consuming API credits. Generate with: claude setup-token
-    args.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${oauthToken}`);
-    logger.info({ containerName }, 'Max subscription OAuth token injected');
-  } else {
-    // OneCLI gateway handles credential injection — containers never see real secrets.
-    // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
-    const onecliApplied = await onecli.applyContainerConfig(args, {
-      addHostMapping: false, // Nanoclaw already handles host gateway
-      agent: agentIdentifier,
-    });
-    if (onecliApplied) {
-      logger.info({ containerName }, 'OneCLI gateway config applied');
+  // Authentication — only used when LiteLLM proxy is NOT configured.
+  // When LiteLLM is active, it handles all provider credentials server-side.
+  if (!LITELLM_PROXY_URL) {
+    if (USE_OAUTH) {
+      // Max subscription OAuth — disabled by default (Anthropic policy change April 2026
+      // prohibits OAuth use with third-party harnesses). Re-enable via USE_OAUTH=true.
+      const oauthToken = getOAuthToken();
+      if (oauthToken) {
+        args.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${oauthToken}`);
+        logger.info({ containerName }, 'Max subscription OAuth token injected');
+      } else {
+        logger.warn(
+          { containerName },
+          'USE_OAUTH=true but no valid token found, falling back to OneCLI',
+        );
+        const onecliApplied = await onecli.applyContainerConfig(args, {
+          addHostMapping: false,
+          agent: agentIdentifier,
+        });
+        if (!onecliApplied) {
+          logger.warn(
+            { containerName },
+            'OneCLI gateway not reachable — container will have no credentials',
+          );
+        }
+      }
     } else {
-      logger.warn(
-        { containerName },
-        'OneCLI gateway not reachable — container will have no credentials',
-      );
+      // Default: OneCLI API key gateway handles credential injection.
+      const onecliApplied = await onecli.applyContainerConfig(args, {
+        addHostMapping: false,
+        agent: agentIdentifier,
+      });
+      if (onecliApplied) {
+        logger.info({ containerName }, 'OneCLI gateway config applied');
+      } else {
+        logger.warn(
+          { containerName },
+          'OneCLI gateway not reachable — container will have no credentials',
+        );
+      }
     }
   }
 

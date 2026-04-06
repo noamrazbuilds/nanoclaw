@@ -17,6 +17,7 @@ import {
   POLL_INTERVAL,
   TELEGRAM_BOT_POOL,
   TIMEZONE,
+  USE_OAUTH,
 } from './config.js';
 import './channels/index.js';
 import {
@@ -1144,7 +1145,8 @@ async function main(): Promise<void> {
 
   // Start OAuth token refresh monitor — sends notifications to all main groups
   // if the Max subscription token is about to expire and can't be refreshed.
-  if (CLAUDE_OAUTH_TOKEN) {
+  // Only active when USE_OAUTH=true (disabled by default per Anthropic policy April 2026).
+  if (USE_OAUTH && CLAUDE_OAUTH_TOKEN) {
     startOAuthRefreshMonitor(async (message) => {
       for (const [jid, group] of Object.entries(registeredGroups)) {
         if (!group.isMain) continue;

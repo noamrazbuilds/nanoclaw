@@ -79,6 +79,30 @@ model_list:
       model: gemini/gemini-2.5-pro
       api_key: os.environ/GOOGLE_API_KEY
 
+  # ── DeepSeek ────────────────────────────────────────────────
+  - model_name: deepseek-v3.2
+    litellm_params:
+      model: deepseek/deepseek-chat   # LiteLLM's name for latest DeepSeek V3 series
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  # ── MiniMax ─────────────────────────────────────────────────
+  - model_name: minimax-m2.5
+    litellm_params:
+      model: minimax/MiniMax-M2.5
+      api_key: os.environ/MINIMAX_API_KEY
+
+  # ── Moonshot / Kimi ─────────────────────────────────────────
+  - model_name: kimi-k2.5
+    litellm_params:
+      model: openrouter/moonshot/kimi-k2
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # ── Gemini Flash-Lite (cheap heartbeat tasks only) ──────────
+  - model_name: gemini-flash-lite
+    litellm_params:
+      model: gemini/gemini-2.5-flash-lite-preview-06-17
+      api_key: os.environ/GOOGLE_API_KEY
+
   # ── fal.ai (Flux + Ideogram) ────────────────────────────────
   - model_name: flux-pro
     litellm_params:
@@ -91,21 +115,27 @@ model_list:
       api_key: os.environ/FAL_AI_API_KEY
 
   # ── Local Ollama ────────────────────────────────────────────
-  # Uncomment when Ollama is running locally
-  # - model_name: llama3
-  #   litellm_params:
-  #     model: ollama/llama3
-  #     api_base: http://localhost:11434
-  #
-  # - model_name: deepseek-r1
-  #   litellm_params:
-  #     model: ollama/deepseek-r1
-  #     api_base: http://localhost:11434
+  - model_name: local-coder
+    litellm_params:
+      model: ollama/qwen2.5-coder:3b
+      api_base: http://host.docker.internal:11434
+
+  - model_name: local-general
+    litellm_params:
+      model: ollama/gemma3:4b
+      api_base: http://host.docker.internal:11434
 
 litellm_settings:
-  drop_params: true  # Drop unsupported params instead of erroring
-  num_retries: 2
-  request_timeout: 300  # 5 min for long agent queries
+  drop_params: true      # Strips unsupported params (cache_control, output_config, etc.)
+  num_retries: 2         # Retry each model before triggering fallback
+  request_timeout: 300   # 5 min for long agent queries
+  fallbacks:             # If primary fails after retries → fall back to claude-sonnet-4-6
+    - deepseek-v3.2: [claude-sonnet-4-6]
+    - minimax-m2.5: [claude-sonnet-4-6]
+    - kimi-k2.5: [claude-sonnet-4-6]
+    - gemini-flash-lite: [claude-sonnet-4-6]
+  allowed_fails: 3       # Cooldown model after 3 failures/min
+  cooldown_time: 60      # Cooldown duration in seconds
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

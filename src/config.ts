@@ -19,6 +19,7 @@ const envConfig = readEnvFile([
   'TZ',
   'DEFAULT_MODEL',
   'DEFAULT_FALLBACK_MODEL',
+  'USE_OAUTH',
 ]);
 
 export const ASSISTANT_NAME =
@@ -89,6 +90,12 @@ export const LITELLM_API_KEY =
 // This is mutually exclusive with OneCLI API key injection.
 export const CLAUDE_OAUTH_TOKEN =
   process.env.CLAUDE_OAUTH_TOKEN || envConfig.CLAUDE_OAUTH_TOKEN || '';
+
+// OAuth for Claude Max subscription — disabled by default (Anthropic policy change
+// April 2026 prohibits OAuth use with third-party harnesses). Set USE_OAUTH=true
+// to re-enable if/when Anthropic reverses this policy.
+export const USE_OAUTH =
+  (process.env.USE_OAUTH || envConfig.USE_OAUTH || 'false') === 'true';
 
 // ElevenLabs TTS (for /speak skill with Dude voice)
 export const ELEVENLABS_API_KEY =

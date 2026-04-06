@@ -416,6 +416,50 @@ Use these for lightweight or high-frequency tasks to reduce API spend. Ollama lo
 
 ---
 
+## Model Routing
+
+All LLM traffic routes through the LiteLLM proxy (`ANTHROPIC_BASE_URL`). Claude models use `ANTHROPIC_API_KEY`; non-Claude models use their own provider keys — all managed in LiteLLM config server-side.
+
+### Routing Table
+
+| Task type | Model | Why |
+|-----------|-------|-----|
+| General conversation | `sonnet` (default) | Reliable, well-tested |
+| Long multi-step agentic tasks | `minimax-m2.5` | Interleaved thinking per tool call |
+| Coding tasks | `deepseek-v3.2` | SWE-Bench 73.1%, ~14× cheaper than Sonnet |
+| Sub-agent / swarm coordination | `kimi-k2.5` | Built for 100+ sub-agents |
+| Heartbeat / simple scheduled tasks | `gemini-flash-lite` | Cheapest, fine for non-agentic work |
+| Fallback (all non-Claude models) | `claude-sonnet-4-6` | Auto-applied at LiteLLM proxy level |
+
+**Fallback**: all non-Claude models fall back to `claude-sonnet-4-6` automatically if the provider is down (handled at LiteLLM proxy level — transparent to you).
+
+### Per-message override
+
+User writes `/model deepseek-v3.2` or `use minimax-m2.5` in any message.
+
+### Set a group's default model (IPC)
+
+Write a JSON file to `/workspace/ipc/tasks/set-model-{timestamp}.json`:
+
+```json
+{
+  "type": "update_group_config",
+  "jid": "<target group JID>",
+  "containerConfig": {
+    "model": "deepseek-v3.2",
+    "fallbackModel": "claude-sonnet-4-6"
+  }
+}
+```
+
+Main group only. Changes persist across restarts. To revert to global default, set `"model": null`.
+
+### Scheduled task model
+
+Include `"model": "gemini-flash-lite"` in the `schedule_task` IPC payload — task records have their own model field independent of group config.
+
+---
+
 ## PKA Database Rule
 
 **Any direct write to `pka.db` via sqlite3 must load the crsqlite extension and call `crsql_finalize()` before the session closes**, or it will leave prepared statements open:
