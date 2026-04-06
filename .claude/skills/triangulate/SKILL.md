@@ -10,7 +10,34 @@ Run a task through 3 LLM providers for maximum reasoning diversity:
 2. **Critique** — different-provider model reviews and finds gaps
 3. **Resolve** — third-provider model synthesizes the final result
 
+## Arguments
+
+- `/triangulate <task>` — run with default models (from routing table)
+- `/triangulate --models <generate>,<critique>,<resolve> <task>` — override all 3 models
+- `/triangulate --models help` — show available models and current routing defaults
+
 ## Process
+
+### Step 0: Parse Arguments
+
+**Set the LiteLLM key:**
+```bash
+LITELLM_KEY=$(grep LITELLM_API_KEY .env 2>/dev/null | cut -d= -f2 || echo 'sk-6e2940152162a6a90ac9fc5f6636c975')
+LITELLM_URL="http://localhost:4000/v1/chat/completions"
+```
+
+**Parse `--models` flag:**
+
+- If `--models help`: query available models and show routing table, then stop:
+  ```bash
+  curl -s http://localhost:4000/v1/models \
+    -H "Authorization: Bearer $LITELLM_KEY" | \
+    python3 -c "import sys,json; [print(f'  {m[\"id\"]}') for m in json.load(sys.stdin)['data']]"
+  ```
+  Then read and display `${CLAUDE_SKILL_DIR}/references/model-routing.md`.
+
+- If `--models <list>`: split by comma. First model is Generate, second is Critique, third is Resolve. Skip routing table entirely.
+- If no `--models`: proceed to task classification and routing table lookup.
 
 ### Step 1: Classify the Task
 
@@ -26,7 +53,7 @@ If unclear, use **default**.
 
 ### Step 2: Select Models
 
-Read the routing table in `${CLAUDE_SKILL_DIR}/references/model-routing.md` and pick the 3 models for the classified task type.
+If `--models` was provided, use those directly. Otherwise, read the routing table in `${CLAUDE_SKILL_DIR}/references/model-routing.md` and pick the 3 models for the classified task type.
 
 ### Step 3: Run the Pipeline
 
@@ -43,8 +70,8 @@ call_llm() {
   local sys_json=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$system_prompt")
   local usr_json=$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$user_prompt")
 
-  response=$(curl -s http://localhost:4000/v1/chat/completions \
-    -H "Authorization: Bearer $(grep LITELLM_API_KEY .env 2>/dev/null | cut -d= -f2 || echo 'sk-6e2940152162a6a90ac9fc5f6636c975')" \
+  response=$(curl -s "$LITELLM_URL" \
+    -H "Authorization: Bearer $LITELLM_KEY" \
     -H "Content-Type: application/json" \
     -d "{
       \"model\": \"$model\",
