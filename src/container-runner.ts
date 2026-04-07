@@ -234,6 +234,16 @@ function buildVolumeMounts(
     });
   }
 
+  // Ambient audio library for link-to-audio background mixing (read-only)
+  const ambientAudioDir = path.join(process.env.HOME || '/root', '.ambient-audio');
+  if (fs.existsSync(ambientAudioDir)) {
+    mounts.push({
+      hostPath: ambientAudioDir,
+      containerPath: '/ambient-audio',
+      readonly: true,
+    });
+  }
+
   // Copy agent-runner source into a per-group writable location so agents
   // can customize it (add tools, change behavior) without affecting other
   // groups. Recompiled on container startup via entrypoint.sh.

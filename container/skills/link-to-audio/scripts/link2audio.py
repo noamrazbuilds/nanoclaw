@@ -20,9 +20,33 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
+
+
+# --- Background audio mixing constants ---
+
+AMBIENT_AUDIO_DIR = "/ambient-audio"
+
+BG_VOLUME_DEFAULTS = {
+    "brown-noise":    0.14,
+    "rain":           0.12,
+    "river":          0.10,
+    "ocean":          0.10,
+    "forest-wind":    0.12,
+    "airplane-cabin": 0.15,
+}
+
+BG_VOLUME_MIN = 0.05
+BG_VOLUME_MAX = 0.25
+
+AMBIENT_FORMAT_PRIORITY = ("wav", "flac", "ogg", "mp3")
+
+# Opus encoding for re-encode after mixing (higher than default to offset
+# generational loss from decode+re-encode)
+OPUS_BITRATE = "64k"
 
 
 # --- Text chunking ---
@@ -160,6 +184,137 @@ def concatenate_audio(chunk_paths, output_path):
     return output_path
 
 
+# --- Background audio mixing ---
+
+def _resolve_bg_volume(bg_type, explicit_volume):
+    """Return clamped volume: explicit override > per-type default > 0.12."""
+    if explicit_volume is not None:
+        return max(BG_VOLUME_MIN, min(BG_VOLUME_MAX, explicit_volume))
+    return BG_VOLUME_DEFAULTS.get(bg_type, 0.12)
+
+
+def _resolve_ambient_path(bg_type):
+    """Find the ambient file for bg_type in /ambient-audio/. Returns path or None."""
+    for ext in AMBIENT_FORMAT_PRIORITY:
+        candidate = os.path.join(AMBIENT_AUDIO_DIR, f"{bg_type}.{ext}")
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _get_audio_duration(path):
+    """Get duration in seconds via ffprobe."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "csv=p=0", path],
+        capture_output=True, text=True, timeout=15,
+    )
+    return float(result.stdout.strip())
+
+
+def mix_background(speech_path, bg_type, bg_volume=None, work_dir=None):
+    """
+    Mix a background audio layer under the speech .opus file.
+
+    Returns (path, fell_back) where fell_back is True if an ambient type
+    was requested but brown noise was used instead. On failure, returns
+    the original path (graceful degradation — unmixed audio > no audio).
+    """
+    if work_dir is None:
+        work_dir = os.path.dirname(speech_path)
+
+    vol = _resolve_bg_volume(bg_type, bg_volume)
+    output_path = os.path.join(work_dir, "mixed_output.opus")
+    fell_back = False
+
+    # Get speech duration for noise generation and fade timing
+    try:
+        duration = _get_audio_duration(speech_path)
+    except Exception as e:
+        print(f"WARNING: Could not probe speech duration ({e}) — skipping background mix")
+        return speech_path, False
+
+    # Dynamic fade: min(3s, half the duration) to handle short clips
+    fade_dur = min(3.0, duration / 2)
+    fade_out_start = max(0, duration - fade_dur)
+
+    # Determine background source
+    use_brown_noise = False
+    ambient_path = None
+
+    if bg_type == "brown-noise":
+        use_brown_noise = True
+    else:
+        ambient_path = _resolve_ambient_path(bg_type)
+        if ambient_path is None:
+            print(f"WARNING: Ambient file for '{bg_type}' not found in {AMBIENT_AUDIO_DIR} — falling back to brown noise")
+            use_brown_noise = True
+            fell_back = True
+
+    # Build ffmpeg command
+    if use_brown_noise:
+        filter_complex = (
+            f"anoisesrc=color=brown:duration={duration}:sample_rate=48000[noise];"
+            f"[noise]volume={vol},"
+            f"afade=t=in:st=0:d={fade_dur},"
+            f"afade=t=out:st={fade_out_start}:d={fade_dur}[bg];"
+            f"[0:a][bg]amix=inputs=2:duration=first:dropout_transition=0"
+        )
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", speech_path,
+            "-filter_complex", filter_complex,
+            "-c:a", "libopus", "-b:a", OPUS_BITRATE, "-vbr", "on",
+            output_path,
+        ]
+    else:
+        filter_complex = (
+            f"[1:a]atrim=0:{duration},asetpts=PTS-STARTPTS,"
+            f"volume={vol},"
+            f"afade=t=in:st=0:d={fade_dur},"
+            f"afade=t=out:st={fade_out_start}:d={fade_dur}[bg];"
+            f"[0:a][bg]amix=inputs=2:duration=first:dropout_transition=0"
+        )
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", speech_path,
+            "-stream_loop", "-1", "-i", ambient_path,
+            "-filter_complex", filter_complex,
+            "-c:a", "libopus", "-b:a", OPUS_BITRATE, "-vbr", "on",
+            output_path,
+        ]
+
+    # Execute
+    bg_label = "brown-noise" if use_brown_noise else bg_type
+    print(f"Mixing background: {bg_label} at volume {vol:.2f} (fade {fade_dur:.1f}s)")
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            timeout=max(120, duration * 2),
+        )
+        if result.returncode != 0:
+            print(f"WARNING: ffmpeg mixing failed (exit {result.returncode}): {result.stderr[-300:]}")
+            return speech_path, False
+    except subprocess.TimeoutExpired:
+        print(f"WARNING: ffmpeg mixing timed out — delivering unmixed audio")
+        return speech_path, False
+
+    # Validate output
+    if not os.path.isfile(output_path) or os.path.getsize(output_path) < 100:
+        print("WARNING: Mixed output missing or empty — delivering unmixed audio")
+        return speech_path, False
+
+    # Replace original with mixed version
+    final_path = speech_path.replace(".opus", "_bg.opus")
+    shutil.move(output_path, final_path)
+
+    size_kb = os.path.getsize(final_path) / 1024
+    print(f"Background mix complete: {final_path} ({size_kb:.0f} KB)")
+
+    return final_path, fell_back
+
+
 # --- IPC delivery ---
 
 def send_audio_ipc(audio_path, chat_jid, ipc_dir):
@@ -214,6 +369,11 @@ def main():
                         help="Path to tts.py")
     parser.add_argument("--extract-script", default=None,
                         help="Path to extract.py (default: same dir as this script)")
+    parser.add_argument("--background", default=None, metavar="TYPE",
+                        help="Background audio: brown-noise, rain, river, ocean, "
+                             "forest-wind, airplane-cabin")
+    parser.add_argument("--bg-volume", type=float, default=None, metavar="VOL",
+                        help="Background volume 0.05-0.25 (default: per-type)")
     args = parser.parse_args()
 
     # Default extract script path: same directory as this script
@@ -293,6 +453,16 @@ def main():
     print("Concatenating audio...")
     concatenate_audio(chunk_paths, output_path)
 
+    # Step 4b: Background audio mixing (optional)
+    bg_fell_back = False
+    if args.background:
+        output_path, bg_fell_back = mix_background(
+            speech_path=output_path,
+            bg_type=args.background,
+            bg_volume=args.bg_volume,
+            work_dir=args.output_dir,
+        )
+
     file_size = os.path.getsize(output_path)
     file_size_mb = file_size / (1024 * 1024)
     print(f"Audio ready: {output_path} ({file_size_mb:.1f} MB)")
@@ -301,7 +471,7 @@ def main():
     send_audio_ipc(output_path, args.chat_jid, args.ipc_dir)
 
     # Output success result
-    print(json.dumps({
+    result = {
         "status": "ok",
         "title": title,
         "word_count": word_count,
@@ -311,7 +481,13 @@ def main():
         "output_path": output_path,
         "voice": args.voice,
         "backend": args.backend,
-    }))
+    }
+    if args.background:
+        result["background"] = args.background
+        result["bg_volume"] = _resolve_bg_volume(args.background, args.bg_volume)
+        if bg_fell_back:
+            result["bg_fallback"] = "brown-noise"
+    print(json.dumps(result))
 
 
 if __name__ == "__main__":

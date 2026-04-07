@@ -14,6 +14,8 @@ Activate this skill when the message matches any of these patterns:
 - `!listen <URL>` or `!read <URL>` — explicit command
 - `!listen <URL> voice:nova` — with voice override
 - `!listen <URL> use elevenlabs` — with backend override
+- `!listen <URL> bg:rain` — with background audio
+- `!listen <URL> bg:brown-noise vol:0.15` — with background + volume override
 
 ## Step 1: Parse the Request
 
@@ -21,12 +23,14 @@ Extract from the message:
 - **URL**: the `https://...` link
 - **Voice override**: look for `voice:<name>` (valid: alloy, echo, fable, onyx, nova, shimmer)
 - **Backend override**: look for `use <backend>` or `backend:<name>` (valid: openai, elevenlabs, piper)
+- **Background audio**: look for `bg:<type>` (valid: brown-noise, rain, river, ocean, forest-wind, airplane-cabin)
+- **Background volume**: look for `vol:<number>` (range: 0.05–0.25)
 
-Defaults: voice=`shimmer`, backend=`openai`.
+Defaults: voice=`shimmer`, backend=`openai`, background=none (off).
 
 ## Step 2: Run the Pipeline
 
-Use the orchestrator script. It handles extraction, chunking, TTS, concatenation, and IPC delivery in one call.
+Use the orchestrator script. It handles extraction, chunking, TTS, concatenation, optional background mixing, and IPC delivery in one call.
 
 ```bash
 CHAT_JID=$(cat /workspace/ipc/current_chat_jid 2>/dev/null || echo "$NANOCLAW_CHAT_JID")
@@ -47,6 +51,15 @@ python3 /home/node/.claude/skills/link-to-audio/scripts/link2audio.py \
   --backend "elevenlabs"
 ```
 
+With background audio:
+```bash
+python3 /home/node/.claude/skills/link-to-audio/scripts/link2audio.py \
+  --url "THE_URL" \
+  --chat-jid "$CHAT_JID" \
+  --background "rain" \
+  --bg-volume 0.12
+```
+
 The script prints progress to stdout and outputs a final JSON result line.
 
 ## Step 3: Report to User
@@ -56,8 +69,9 @@ Based on the script output:
 **On success** (last line is JSON with `"status": "ok"`):
 - Tell the user the voice note was sent
 - Include: article title, word count, estimated duration, voice used
+- If background was used, mention it. If `bg_fallback` is present, note that the requested ambient wasn't available and brown noise was used instead.
 
-Example: *Sent voice note of "Article Title" (~2,500 words, ~17 min) using shimmer voice.*
+Example: *Sent voice note of "Article Title" (~2,500 words, ~17 min) using shimmer voice with rain background.*
 
 **On error** (exit code 1, last line is JSON with `"status": "error"`):
 - Report the error message from the JSON
@@ -68,6 +82,35 @@ Example: *Sent voice note of "Article Title" (~2,500 words, ~17 min) using shimm
   - `timeout`: "The page took too long to load."
   - `extraction_failed`: "Couldn't extract readable content from this page."
   - `tts_failed`: "Audio generation failed. Try again?"
+
+## Background Audio
+
+Optionally mix a background audio layer under the speech to reduce listener fatigue.
+
+### Available types
+
+| Type | Source | Default Volume |
+|---|---|---|
+| `brown-noise` | Generated on-the-fly (always available) | 0.14 |
+| `rain` | Ambient file | 0.12 |
+| `river` | Ambient file | 0.10 |
+| `ocean` | Ambient file | 0.10 |
+| `forest-wind` | Ambient file | 0.12 |
+| `airplane-cabin` | Ambient file | 0.15 |
+
+- **Brown noise** is always available (synthetic).
+- **Ambient files** are loaded from `/ambient-audio/` in the container (mounted from `~/.ambient-audio/` on host). If the requested ambient file isn't found, it falls back to brown noise with a warning.
+- Volume range: 0.05 (barely perceptible) to 0.25 (clearly audible). Default varies by type.
+
+### Adding ambient files
+
+Place WAV/FLAC/OGG/MP3 files in `~/.ambient-audio/` on the host with the type as filename:
+```
+~/.ambient-audio/rain.wav
+~/.ambient-audio/ocean.wav
+```
+
+Files are picked up automatically on next use — no restart needed.
 
 ## Notes
 
