@@ -24,6 +24,12 @@ export interface IpcDeps {
     audioPath: string,
     caption?: string,
   ) => Promise<void>;
+  sendDocument?: (
+    jid: string,
+    filePath: string,
+    caption?: string,
+    filename?: string,
+  ) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -147,7 +153,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   );
                 } else if (fs.statSync(audioPath).size < 100) {
                   logger.error(
-                    { audioPath, size: fs.statSync(audioPath).size, sourceGroup },
+                    {
+                      audioPath,
+                      size: fs.statSync(audioPath).size,
+                      sourceGroup,
+                    },
                     'IPC audio file is suspiciously small — skill may have produced invalid output',
                   );
                 }
@@ -173,6 +183,68 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC audio attempt blocked',
+                  );
+                }
+              } else if (
+                data.type === 'document' &&
+                data.chatJid &&
+                data.filePath
+              ) {
+                // Translate container paths to host paths
+                let docPath: string = data.filePath;
+                if (docPath.startsWith('/workspace/group/')) {
+                  docPath = docPath.replace(
+                    '/workspace/group/',
+                    `groups/${sourceGroup}/`,
+                  );
+                }
+                // Verify the document file exists and is non-empty
+                if (!fs.existsSync(docPath)) {
+                  logger.error(
+                    {
+                      docPath,
+                      sourceGroup,
+                      originalPath: data.filePath,
+                    },
+                    'IPC document file not found — skill may have failed or used wrong path',
+                  );
+                } else if (fs.statSync(docPath).size < 1) {
+                  logger.error(
+                    {
+                      docPath,
+                      size: fs.statSync(docPath).size,
+                      sourceGroup,
+                    },
+                    'IPC document file is empty',
+                  );
+                }
+
+                const targetGroup = registeredGroups[data.chatJid];
+                if (
+                  isMain ||
+                  (targetGroup && targetGroup.folder === sourceGroup)
+                ) {
+                  if (deps.sendDocument) {
+                    await deps.sendDocument(
+                      data.chatJid,
+                      docPath,
+                      data.caption,
+                      data.filename,
+                    );
+                    logger.info(
+                      { chatJid: data.chatJid, sourceGroup, docPath },
+                      'IPC document sent',
+                    );
+                  } else {
+                    logger.warn(
+                      { chatJid: data.chatJid },
+                      'Document IPC received but no sendDocument handler',
+                    );
+                  }
+                } else {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'Unauthorized IPC document attempt blocked',
                   );
                 }
               } else if (data.type === 'message' && data.chatJid && data.text) {

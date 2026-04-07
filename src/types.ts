@@ -98,6 +98,13 @@ export interface Channel {
   syncGroups?(force: boolean): Promise<void>;
   // Optional: send audio as a voice note.
   sendAudio?(jid: string, audioPath: string, caption?: string): Promise<void>;
+  // Optional: send a document file (PDF, etc.).
+  sendDocument?(
+    jid: string,
+    filePath: string,
+    caption?: string,
+    filename?: string,
+  ): Promise<void>;
 }
 
 // Callback type that channels use to deliver inbound messages

@@ -61,6 +61,7 @@ import {
   formatMessages,
   formatOutbound,
   routeAudio,
+  routeDocument,
 } from './router.js';
 import { ChannelType } from './text-styles.js';
 import {
@@ -232,7 +233,8 @@ const DELEGATE_SLASH_RE = /\/delegate-models\b/i;
 // Matches: "use opus", "switch to haiku", "respond with sonnet", "answer in opus"
 // Note: NL matching uses ANTHROPIC_ALIASES only (not the permissive MODEL_SLUG)
 // to avoid false positives on common English phrases like "in the" → model="the"
-const NL_MODEL_SLUG = 'opus|sonnet|haiku|gpt-4o|gpt-4o-mini|o3|gemini-2\\.5-pro|gemini-2\\.5-flash|gemini-flash-lite|deepseek-v3\\.2|minimax-m2\\.5|kimi-k2\\.5|local-coder|local-general';
+const NL_MODEL_SLUG =
+  'opus|sonnet|haiku|gpt-4o|gpt-4o-mini|o3|gemini-2\\.5-pro|gemini-2\\.5-flash|gemini-flash-lite|deepseek-v3\\.2|minimax-m2\\.5|kimi-k2\\.5|local-coder|local-general';
 const MODEL_NL_RE = new RegExp(
   `\\b(?:use|switch\\s+to|respond\\s+(?:with|in|using)|answer\\s+(?:with|in|using)|run\\s+(?:with|in|on))\\s+(${NL_MODEL_SLUG})\\b`,
   'i',
@@ -1149,6 +1151,8 @@ async function main(): Promise<void> {
     },
     sendAudio: (jid, audioPath, caption) =>
       routeAudio(channels, jid, audioPath, caption),
+    sendDocument: (jid, filePath, caption, filename) =>
+      routeDocument(channels, jid, filePath, caption, filename),
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroups: async (force: boolean) => {

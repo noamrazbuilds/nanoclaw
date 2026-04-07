@@ -530,6 +530,24 @@ export class TelegramChannel implements Channel {
     logger.info({ jid, audioPath }, 'Telegram voice note sent');
   }
 
+  async sendDocument(
+    jid: string,
+    filePath: string,
+    caption?: string,
+    filename?: string,
+  ): Promise<void> {
+    if (!this.bot) throw new Error('Telegram bot not connected');
+    const chatId = jid.replace('tg:', '');
+    const file = new InputFile(fs.readFileSync(filePath), filename || path.basename(filePath));
+    await this.bot.api.sendDocument(chatId, file, {
+      ...(caption ? { caption } : {}),
+    });
+    logger.info(
+      { jid, filePath, filename: filename || path.basename(filePath) },
+      'Telegram document sent',
+    );
+  }
+
   async disconnect(): Promise<void> {
     if (this.bot) {
       this.bot.stop();

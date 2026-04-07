@@ -4,6 +4,10 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## [1.2.37] - 2026-04-07
+
+- Added `document` IPC message type for sending files (PDF, DOCX, etc.) from agent skills to WhatsApp and Telegram. New `sendDocument` method on both channels, with container path translation, file validation, and authorization matching the existing `sendAudio` pattern.
+
 ## [1.2.36] - 2026-04-07
 
 - Fixed memory backup script failing silently on large payloads (~26MB/6.5M tokens) that exceeded Haiku's context window. AI integrity check now sends only changed files (diff-only) instead of all files, and writes the payload to a temp file (`curl -d @file`) to avoid bash argument size limits.

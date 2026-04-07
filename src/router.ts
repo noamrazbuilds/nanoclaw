@@ -58,6 +58,20 @@ export function routeAudio(
   return channel.sendAudio(jid, audioPath, caption);
 }
 
+export function routeDocument(
+  channels: Channel[],
+  jid: string,
+  filePath: string,
+  caption?: string,
+  filename?: string,
+): Promise<void> {
+  const channel = channels.find((c) => c.ownsJid(jid) && c.isConnected());
+  if (!channel?.sendDocument) {
+    throw new Error(`No document-capable channel for JID: ${jid}`);
+  }
+  return channel.sendDocument(jid, filePath, caption, filename);
+}
+
 export function findChannel(
   channels: Channel[],
   jid: string,

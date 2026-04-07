@@ -434,6 +434,41 @@ export class WhatsAppChannel implements Channel {
     logger.info({ jid, audioPath }, 'Audio voice note sent');
   }
 
+  async sendDocument(
+    jid: string,
+    filePath: string,
+    caption?: string,
+    filename?: string,
+  ): Promise<void> {
+    const buffer = fs.readFileSync(filePath);
+    const displayName = filename || path.basename(filePath);
+    const ext = path.extname(displayName).toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      '.pdf': 'application/pdf',
+      '.doc': 'application/msword',
+      '.docx':
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.xlsx':
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      '.xls': 'application/vnd.ms-excel',
+      '.csv': 'text/csv',
+      '.txt': 'text/plain',
+      '.zip': 'application/zip',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+    };
+    const mimetype = mimeTypes[ext] || 'application/octet-stream';
+
+    await this.sock.sendMessage(jid, {
+      document: buffer,
+      mimetype,
+      fileName: displayName,
+      ...(caption ? { caption } : {}),
+    });
+    logger.info({ jid, filePath, filename: displayName }, 'Document sent');
+  }
+
   isConnected(): boolean {
     return this.connected;
   }
