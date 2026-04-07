@@ -433,9 +433,11 @@ All LLM traffic routes through the LiteLLM proxy (`ANTHROPIC_BASE_URL`). Claude 
 
 **Fallback**: all non-Claude models fall back to `claude-sonnet-4-6` automatically if the provider is down (handled at LiteLLM proxy level — transparent to you).
 
+**When scheduling any task, classify it against this table and set the `model` field accordingly — do not default to sonnet unless the task genuinely doesn't fit any other category.** Apply the same logic when the user asks you to run something on a specific model or when updating existing tasks.
+
 ### Per-message override
 
-User writes `/model deepseek-v3.2` or `use minimax-m2.5` in any message.
+User writes `/model deepseek-v3.2` or `use minimax-m2.5` in any message. The orchestrator strips these directives before the message reaches you — you will never see them. Do not comment on model selection or which model is running.
 
 ### Set a group's default model (IPC)
 
@@ -456,7 +458,13 @@ Main group only. Changes persist across restarts. To revert to global default, s
 
 ### Scheduled task model
 
-Include `"model": "gemini-flash-lite"` in the `schedule_task` IPC payload — task records have their own model field independent of group config.
+Include `"model": "gemini-flash-lite"` in the `schedule_task` IPC payload — task records have their own model field independent of group config. You can also update an existing task's model via `update_task` IPC:
+
+```json
+{ "type": "update_task", "taskId": "<id>", "model": "gemini-flash-lite" }
+```
+
+The model field accepts **any model name registered in LiteLLM** — not just opus/sonnet/haiku. Use the routing table above to pick the right model for each task type. There is no code-level restriction on which model a task can use.
 
 ---
 
