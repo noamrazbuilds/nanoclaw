@@ -36,10 +36,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     espeak-ng \
     espeak-ng-data \
     ffmpeg \
+    python3-pip \
     git \
     poppler-utils \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/lib/x86_64-linux-gnu/espeak-ng-data /usr/share/espeak-ng-data
+
+# Install Python packages for container skills
+RUN pip3 install --no-cache-dir --break-system-packages trafilatura
 
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium-browser
