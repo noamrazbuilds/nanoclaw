@@ -4,6 +4,14 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## [1.2.36] - 2026-04-07
+
+- Fixed memory backup script failing silently on large payloads (~26MB/6.5M tokens) that exceeded Haiku's context window. AI integrity check now sends only changed files (diff-only) instead of all files, and writes the payload to a temp file (`curl -d @file`) to avoid bash argument size limits.
+- Improved heuristic fallback: per-file shrinkage >50% no longer triggers a false alarm when content was moved between files (e.g. group CLAUDE.md → global CLAUDE.md). Now checks total size across all groups before alerting.
+- Added `$HOME/.local/bin` to PATH in backup script so `onecli` CLI is found in cron's minimal environment (was silently failing since 2026-03-29).
+- Better API error reporting: response parser now surfaces specific error types instead of generic "Failed to parse AI response".
+- Conversation logs excluded from AI integrity check (append-only transcripts, not integrity-sensitive).
+
 ## [1.2.35] - 2026-03-26
 
 - [BREAKING] OneCLI Agent Vault replaces the built-in credential proxy. Existing `.env` credentials must be migrated to the vault. Run `/init-onecli` to install OneCLI and migrate credentials.

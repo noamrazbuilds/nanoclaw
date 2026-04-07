@@ -11,6 +11,9 @@
 
 set -euo pipefail
 
+# Ensure ~/.local/bin is on PATH (cron uses a minimal PATH)
+export PATH="$HOME/.local/bin:$PATH"
+
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GROUPS_DIR="$PROJECT_ROOT/groups"
 BACKUP_ROOT="$PROJECT_ROOT/data/memory-backups"
@@ -111,45 +114,64 @@ get_last_backup() {
   find "$BACKUP_ROOT" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort | tail -1
 }
 
-# Build a summary of current memory files for the AI check
-build_current_snapshot() {
-  local output=""
-  for f in $(find "$GROUPS_DIR" -maxdepth 3 \( -name '*.md' \) -type f | sort); do
-    local rel="${f#$GROUPS_DIR/}"
-    local size=$(wc -c < "$f")
-    local lines=$(wc -l < "$f")
-    output+="--- FILE: $rel (${size}B, ${lines} lines) ---"$'\n'
-    output+="$(cat "$f")"$'\n'$'\n'
-  done
-  echo "$output"
-}
-
-# Build a summary of the last backup for comparison
-build_backup_snapshot() {
+# Build a diff-only snapshot: only include files that changed, were added, or removed.
+# Returns paired PREVIOUS/CURRENT blocks for each changed file so the AI can compare.
+build_diff_snapshot() {
   local backup_dir="$1"
   local output=""
-  for f in $(find "$backup_dir" -maxdepth 3 -name '*.md' -type f | sort); do
-    local rel="${f#$backup_dir/}"
-    local size=$(wc -c < "$f")
-    local lines=$(wc -l < "$f")
-    output+="--- FILE: $rel (${size}B, ${lines} lines) ---"$'\n'
-    output+="$(cat "$f")"$'\n'$'\n'
+  local changed=0
+
+  # Check files that exist now (changed or new)
+  # Skip conversation logs — they're append-only transcripts, not integrity-sensitive
+  for f in $(find "$GROUPS_DIR" -maxdepth 3 \( -name '*.md' \) -not -path '*/conversations/*' -type f | sort); do
+    local rel="${f#$GROUPS_DIR/}"
+    local backup_file="$backup_dir/$rel"
+    if [ -f "$backup_file" ]; then
+      if ! diff -q "$f" "$backup_file" > /dev/null 2>&1; then
+        local cur_size=$(wc -c < "$f")
+        local bak_size=$(wc -c < "$backup_file")
+        output+="--- CHANGED: $rel (was ${bak_size}B, now ${cur_size}B) ---"$'\n'
+        output+="PREVIOUS:"$'\n'"$(cat "$backup_file")"$'\n'$'\n'
+        output+="CURRENT:"$'\n'"$(cat "$f")"$'\n'$'\n'
+        changed=$((changed + 1))
+      fi
+    else
+      local cur_size=$(wc -c < "$f")
+      output+="--- NEW FILE: $rel (${cur_size}B) ---"$'\n'
+      output+="$(cat "$f")"$'\n'$'\n'
+      changed=$((changed + 1))
+    fi
   done
-  echo "$output"
+
+  # Check for deleted files (in backup but not current)
+  for f in $(find "$backup_dir" -maxdepth 3 -name '*.md' -not -path '*/conversations/*' -type f | sort); do
+    local rel="${f#$backup_dir/}"
+    if [ ! -f "$GROUPS_DIR/$rel" ]; then
+      local bak_size=$(wc -c < "$f")
+      output+="--- DELETED: $rel (was ${bak_size}B) ---"$'\n'
+      output+="$(cat "$f")"$'\n'$'\n'
+      changed=$((changed + 1))
+    fi
+  done
+
+  if [ "$changed" -eq 0 ]; then
+    echo ""
+  else
+    echo "$output"
+  fi
 }
 
-# Run AI integrity check comparing current files to last backup
+# Run AI integrity check on the diff between current files and last backup
 run_ai_check() {
-  local current="$1"
-  local previous="$2"
-  local proxy="$3"
+  local diff_snapshot="$1"
+  local proxy="$2"
 
-  local prompt="You are a memory file integrity checker for a personal AI assistant called The Dude. Compare the CURRENT memory files against the PREVIOUS backup and check for corruption or unwanted changes.
+  local prompt="You are a memory file integrity checker for a personal AI assistant called The Dude. Below are the files that CHANGED since the last backup. Each entry shows the PREVIOUS and CURRENT version of the file. Check for corruption or unwanted changes.
 
 Signs of corruption or problems:
 - Key sections completely wiped or replaced with unrelated content
 - Preferences contradicting themselves (e.g. a rule saying 'always guess' when the previous version said 'never guess')
-- Files drastically shorter with important content missing (not just reformatted)
+- Files drastically shorter with important content missing (not just reformatted or moved to another file)
 - Garbled text, encoding issues, or nonsense content
 - Identity information changed (name, email, contact info altered)
 - Communication style rules reversed or removed without apparent reason
@@ -157,44 +179,68 @@ Signs of corruption or problems:
 NOT corruption (normal changes):
 - New preferences added
 - Wording refined while keeping the same meaning
-- Files reorganized or restructured
+- Files reorganized or restructured (content moved between files)
 - New files added
 - Minor formatting changes
+- A file shrinking because its content was moved to a shared/global file
 
 Respond with EXACTLY one line:
 - If everything looks fine: OK
 - If something looks wrong: ALERT: [brief description of the issue]
 
-PREVIOUS BACKUP:
-$previous
+CHANGES SINCE LAST BACKUP:
+$diff_snapshot"
 
-CURRENT FILES:
-$current"
+  # Build the JSON payload to a temp file (avoids bash argument size limits)
+  local payload_file
+  payload_file=$(mktemp)
+  trap "rm -f '$payload_file'" RETURN
 
-  local response
-  response=$(curl -s --proxy "$proxy" --cacert "$ONECLI_CA" \
+  python3 -c "
+import json, sys
+prompt = sys.stdin.read()
+json.dump({
+    'model': 'claude-haiku-4-5-20251001',
+    'max_tokens': 200,
+    'messages': [{'role': 'user', 'content': prompt}]
+}, sys.stdout)
+" <<< "$prompt" > "$payload_file"
+
+  local response curl_exit
+  response=$(curl -s --max-time 60 --proxy "$proxy" --cacert "$ONECLI_CA" \
     -X POST "https://api.anthropic.com/v1/messages" \
     -H "Content-Type: application/json" \
     -H "x-api-key: placeholder" \
     -H "anthropic-version: 2023-06-01" \
-    -d "$(python3 -c "
-import json, sys
-prompt = sys.stdin.read()
-print(json.dumps({
-    'model': 'claude-haiku-4-5-20251001',
-    'max_tokens': 200,
-    'messages': [{'role': 'user', 'content': prompt}]
-}))
-" <<< "$prompt")" 2>/dev/null)
+    -d @"$payload_file" 2>/dev/null) || curl_exit=$?
 
-  # Extract the text from the response
+  if [ -n "${curl_exit:-}" ]; then
+    echo "ERROR: curl failed with exit code $curl_exit"
+    return
+  fi
+
+  if [ -z "$response" ]; then
+    echo "ERROR: curl returned empty response"
+    return
+  fi
+
+  # Extract the text from the response, with proper error handling
   echo "$response" | python3 -c "
 import sys, json
+raw = sys.stdin.read()
 try:
-    data = json.load(sys.stdin)
-    print(data['content'][0]['text'])
-except Exception:
-    print('ERROR: Failed to parse AI response')
+    data = json.loads(raw)
+    if data.get('type') == 'message':
+        print(data['content'][0]['text'])
+    elif data.get('type') == 'error':
+        err = data.get('error', {})
+        print(f'ERROR: API returned {err.get(\"type\", \"unknown\")}: {err.get(\"message\", \"no details\")}')
+    else:
+        print(f'ERROR: Unexpected response type: {data.get(\"type\", \"missing\")}')
+except json.JSONDecodeError:
+    print(f'ERROR: Response was not valid JSON: {raw[:200]}')
+except Exception as e:
+    print(f'ERROR: {e}')
 " 2>/dev/null
 }
 
@@ -248,11 +294,14 @@ LAST_BACKUP=$(get_last_backup)
 if [ -n "$LAST_BACKUP" ]; then
   log "Last backup: $LAST_BACKUP — running integrity check"
 
-  CURRENT=$(build_current_snapshot)
-  PREVIOUS=$(build_backup_snapshot "$LAST_BACKUP")
+  DIFF_SNAPSHOT=$(build_diff_snapshot "$LAST_BACKUP")
 
-  if [ "$AI_AVAILABLE" = true ]; then
-    AI_RESULT=$(run_ai_check "$CURRENT" "$PREVIOUS" "$ONECLI_PROXY")
+  if [ -z "$DIFF_SNAPSHOT" ]; then
+    log "No files changed since last backup — skipping integrity check"
+  elif [ "$AI_AVAILABLE" = true ]; then
+    DIFF_SIZE=${#DIFF_SNAPSHOT}
+    log "Diff snapshot size: ${DIFF_SIZE} bytes"
+    AI_RESULT=$(run_ai_check "$DIFF_SNAPSHOT" "$ONECLI_PROXY")
     log "AI check result: $AI_RESULT"
 
     if [[ "$AI_RESULT" == ALERT:* ]]; then
@@ -278,29 +327,53 @@ Run \`scripts/backup-memory.sh\` manually after resolving."
 
   if [ "$AI_AVAILABLE" = false ]; then
     log "Running heuristic check (AI unavailable)"
-    # If the AI check is unavailable, do a basic heuristic: check that no file
-    # shrank by more than 50%
-    HEURISTIC_FAIL=false
+    # Heuristic: flag files that shrank >50%, but only alert if the total across
+    # all groups also shrank >20% (to avoid false positives from content being
+    # moved between files, e.g. from a group CLAUDE.md to global CLAUDE.md).
+    TOTAL_CURRENT=0
+    TOTAL_BACKUP=0
+    SHRUNK_FILES=""
     for f in $(find "$GROUPS_DIR" -maxdepth 3 -name '*.md' -type f | sort); do
       rel="${f#$GROUPS_DIR/}"
+      current_size=$(wc -c < "$f")
+      TOTAL_CURRENT=$((TOTAL_CURRENT + current_size))
       backup_file="$LAST_BACKUP/$rel"
       if [ -f "$backup_file" ]; then
-        current_size=$(wc -c < "$f")
         backup_size=$(wc -c < "$backup_file")
+        TOTAL_BACKUP=$((TOTAL_BACKUP + backup_size))
         if [ "$backup_size" -gt 100 ] && [ "$current_size" -lt $((backup_size / 2)) ]; then
-          log "HEURISTIC ALERT: $rel shrank from ${backup_size}B to ${current_size}B"
-          send_telegram "⚠️ *Memory Backup Alert*
-
-AI check unavailable, but heuristic check found that \`$rel\` shrank from ${backup_size}B to ${current_size}B (>50% reduction).
-
-Backup *skipped*. Please review."
-          HEURISTIC_FAIL=true
-          break
+          SHRUNK_FILES+="$rel (${backup_size}B → ${current_size}B)"$'\n'
         fi
       fi
     done
-    if [ "$HEURISTIC_FAIL" = true ]; then
-      exit 1
+    # Also count backup-only files (deleted)
+    for f in $(find "$LAST_BACKUP" -maxdepth 3 -name '*.md' -type f | sort); do
+      rel="${f#$LAST_BACKUP/}"
+      if [ ! -f "$GROUPS_DIR/$rel" ]; then
+        backup_size=$(wc -c < "$f")
+        TOTAL_BACKUP=$((TOTAL_BACKUP + backup_size))
+        SHRUNK_FILES+="$rel (${backup_size}B → DELETED)"$'\n'
+      fi
+    done
+
+    if [ -n "$SHRUNK_FILES" ]; then
+      log "Files that shrank >50%: $(echo "$SHRUNK_FILES" | tr '\n' '; ')"
+      # Only alert if total also dropped significantly (content wasn't just moved)
+      if [ "$TOTAL_BACKUP" -gt 0 ] && [ "$TOTAL_CURRENT" -lt $((TOTAL_BACKUP * 80 / 100)) ]; then
+        log "HEURISTIC ALERT: total also shrank (${TOTAL_BACKUP}B → ${TOTAL_CURRENT}B) — likely real data loss"
+        send_telegram "⚠️ *Memory Backup Alert*
+
+AI check unavailable. Heuristic found shrunk files AND total size dropped >20%:
+
+$(echo "$SHRUNK_FILES" | head -5 | sed 's/^/• /')
+
+Total: ${TOTAL_BACKUP}B → ${TOTAL_CURRENT}B
+
+Backup *skipped*. Please review."
+        exit 1
+      else
+        log "Files shrank but total is stable (${TOTAL_BACKUP}B → ${TOTAL_CURRENT}B) — likely reorganized, proceeding"
+      fi
     fi
   fi
 else
