@@ -235,7 +235,10 @@ function buildVolumeMounts(
   }
 
   // Ambient audio library for link-to-audio background mixing (read-only)
-  const ambientAudioDir = path.join(process.env.HOME || '/root', '.ambient-audio');
+  const ambientAudioDir = path.join(
+    process.env.HOME || '/root',
+    '.ambient-audio',
+  );
   if (fs.existsSync(ambientAudioDir)) {
     mounts.push({
       hostPath: ambientAudioDir,

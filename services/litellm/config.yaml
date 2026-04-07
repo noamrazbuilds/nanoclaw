@@ -21,7 +21,10 @@ model_list:
       model: anthropic/claude-haiku-4-5-20251001
       api_key: os.environ/ANTHROPIC_API_KEY
 
-  # Aliases so NanoClaw's model directives (opus/sonnet/haiku) resolve
+  # Aliases so NanoClaw's model directives (opus/sonnet/haiku) resolve.
+  # Claude Code SDK expands short names (e.g. "haiku") to full Anthropic
+  # model IDs (e.g. "claude-haiku-4-5-20251001") before sending to the API.
+  # We need aliases for both the short name AND the expanded ID.
   - model_name: opus
     litellm_params:
       model: anthropic/claude-opus-4-6
@@ -124,6 +127,16 @@ model_list:
     litellm_params:
       model: ollama/gemma3:4b
       api_base: http://host.docker.internal:11434
+
+router_settings:
+  # Claude Code SDK expands short model names (e.g. "haiku") to full Anthropic
+  # model IDs (e.g. "claude-haiku-4-5-20251001") before sending API requests.
+  # These aliases catch SDK-expanded names that don't match our model_name entries.
+  # Currently only haiku is affected (opus/sonnet expand to IDs we already register).
+  model_group_alias:
+    "claude-haiku-4-5-20251001":
+      model: "claude-haiku-4-5"
+      hidden: true
 
 litellm_settings:
   drop_params: true      # Strips unsupported params (cache_control, output_config, etc.)
