@@ -3,6 +3,7 @@
  * Spawns agent execution in containers and handles IPC
  */
 import { ChildProcess, exec, spawn } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -35,6 +36,34 @@ import { getOAuthToken } from './oauth-refresh.js';
 import { RegisteredGroup } from './types.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL });
+
+// Maximum session age before auto-rotation (24 hours)
+export const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Compute a hash of all skill files under container/skills/.
+ * Used to detect when skills have changed so sessions can be invalidated.
+ */
+export function computeSkillsHash(): string {
+  const skillsDir = path.join(process.cwd(), 'container', 'skills');
+  if (!fs.existsSync(skillsDir)) return '';
+
+  const hash = crypto.createHash('sha256');
+  const walkDir = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === '__pycache__') continue;
+        walkDir(fullPath);
+      } else {
+        hash.update(fullPath);
+        hash.update(fs.readFileSync(fullPath));
+      }
+    }
+  };
+  walkDir(skillsDir);
+  return hash.digest('hex').slice(0, 16);
+}
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';

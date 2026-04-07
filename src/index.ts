@@ -25,7 +25,9 @@ import {
   getRegisteredChannelNames,
 } from './channels/registry.js';
 import {
+  computeSkillsHash,
   ContainerOutput,
+  MAX_SESSION_AGE_MS,
   runContainerAgent,
   writeGroupsSnapshot,
   writeTasksSnapshot,
@@ -35,6 +37,7 @@ import {
   ensureContainerRuntimeRunning,
 } from './container-runtime.js';
 import {
+  deleteSession,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -42,6 +45,7 @@ import {
   getMessagesSince,
   getNewMessages,
   getRouterState,
+  getSessionRow,
   initDatabase,
   setRegisteredGroup,
   setRouterState,
@@ -509,7 +513,39 @@ async function processSlotMessages(
   await channel.setTyping?.(chatJid, true);
 
   const isMain = group.isMain === true;
-  const sessionId = sessions[sessKey];
+
+  // Session invalidation: clear stale or outdated sessions
+  let sessionId: string | undefined = sessions[sessKey];
+  if (sessionId) {
+    const row = getSessionRow(sessKey);
+    let invalidReason = '';
+
+    // Check session age (max 24h)
+    if (row?.created_at) {
+      const ageMs = Date.now() - new Date(row.created_at).getTime();
+      if (ageMs > MAX_SESSION_AGE_MS) {
+        invalidReason = `session expired (age: ${Math.round(ageMs / 3600000)}h)`;
+      }
+    }
+
+    // Check if skills have changed since session was created
+    if (!invalidReason && row?.skills_hash) {
+      const currentHash = computeSkillsHash();
+      if (currentHash !== row.skills_hash) {
+        invalidReason = 'skills changed since session started';
+      }
+    }
+
+    if (invalidReason) {
+      logger.info(
+        { group: group.name, sessKey, sessionId, reason: invalidReason },
+        'Invalidating session',
+      );
+      deleteSession(sessKey);
+      delete sessions[sessKey];
+      sessionId = undefined;
+    }
+  }
 
   // Resolve model
   const resolvedModel =
@@ -572,7 +608,7 @@ async function processSlotMessages(
       async (result) => {
         if (result.newSessionId) {
           sessions[sessKey] = result.newSessionId;
-          setSession(sessKey, result.newSessionId);
+          setSession(sessKey, result.newSessionId, computeSkillsHash());
         }
         if (result.result) {
           const raw =
@@ -597,7 +633,7 @@ async function processSlotMessages(
 
     if (output.newSessionId) {
       sessions[sessKey] = output.newSessionId;
-      setSession(sessKey, output.newSessionId);
+      setSession(sessKey, output.newSessionId, computeSkillsHash());
     }
   } catch (err) {
     logger.error({ group: group.name, slotId, err }, 'Slot agent error');
@@ -652,7 +688,7 @@ async function runAgent(
     ? async (output: ContainerOutput) => {
         if (!isOverflow && output.newSessionId) {
           sessions[group.folder] = output.newSessionId;
-          setSession(group.folder, output.newSessionId);
+          setSession(group.folder, output.newSessionId, computeSkillsHash());
         }
         await onOutput(output);
       }
@@ -694,7 +730,7 @@ async function runAgent(
 
     if (output.newSessionId) {
       sessions[group.folder] = output.newSessionId;
-      setSession(group.folder, output.newSessionId);
+      setSession(group.folder, output.newSessionId, computeSkillsHash());
     }
 
     if (output.status === 'error') {

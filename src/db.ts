@@ -153,6 +153,22 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* columns already exist */
   }
+
+  // Add session metadata columns for age tracking and skill-change invalidation
+  try {
+    database.exec(
+      `ALTER TABLE sessions ADD COLUMN created_at TEXT DEFAULT ''`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `ALTER TABLE sessions ADD COLUMN skills_hash TEXT DEFAULT ''`,
+    );
+  } catch {
+    /* column already exists */
+  }
 }
 
 export function initDatabase(): void {
@@ -555,10 +571,31 @@ export function getSession(groupFolder: string): string | undefined {
   return row?.session_id;
 }
 
-export function setSession(groupFolder: string, sessionId: string): void {
+export function setSession(
+  groupFolder: string,
+  sessionId: string,
+  skillsHash?: string,
+): void {
   db.prepare(
-    'INSERT OR REPLACE INTO sessions (group_folder, session_id) VALUES (?, ?)',
-  ).run(groupFolder, sessionId);
+    'INSERT OR REPLACE INTO sessions (group_folder, session_id, created_at, skills_hash) VALUES (?, ?, ?, ?)',
+  ).run(groupFolder, sessionId, new Date().toISOString(), skillsHash ?? '');
+}
+
+export function deleteSession(groupFolder: string): void {
+  db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(groupFolder);
+}
+
+export interface SessionRow {
+  group_folder: string;
+  session_id: string;
+  created_at: string;
+  skills_hash: string;
+}
+
+export function getSessionRow(groupFolder: string): SessionRow | undefined {
+  return db
+    .prepare('SELECT * FROM sessions WHERE group_folder = ?')
+    .get(groupFolder) as SessionRow | undefined;
 }
 
 export function getAllSessions(): Record<string, string> {

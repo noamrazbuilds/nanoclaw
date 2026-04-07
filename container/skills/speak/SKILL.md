@@ -10,6 +10,15 @@ Send text as an audio voice note to the user. Three backends available:
 - **openai** — OpenAI TTS via LiteLLM (natural, ~$0.003/message)
 - **elevenlabs** — ElevenLabs with The Dude's voice + text Dude-ification (~$0.01/message)
 
+## MANDATORY: Use the Scripts
+
+**You MUST use `tts.py` for ALL audio generation. This is not optional.**
+
+- Do NOT call ffmpeg, sox, or TTS APIs directly
+- Do NOT generate audio any other way than through `tts.py`
+- Do NOT skip the Dude-ification step when using ElevenLabs
+- If `tts.py` fails, report the error — do not work around it manually
+
 ## Usage
 
 When the user asks you to speak something, read something aloud, or send audio:
@@ -44,10 +53,14 @@ This adds Dude expressions with decreasing intensity for longer texts. Read the 
 ### Step 4: Generate audio
 
 ```bash
+OUTPUT_DIR="/workspace/group/audio"
+mkdir -p "$OUTPUT_DIR"
+OUTPUT_FILE="$OUTPUT_DIR/speak-$(date +%s%N).opus"
+
 python3 /home/node/.claude/skills/speak/scripts/tts.py \
   --text "the text to speak" \
   --backend <local|openai|elevenlabs> \
-  --output /tmp/speak-output.opus
+  --output "$OUTPUT_FILE"
 ```
 
 For file input:
@@ -55,7 +68,7 @@ For file input:
 python3 /home/node/.claude/skills/speak/scripts/tts.py \
   --file /path/to/file.txt \
   --backend <backend> \
-  --output /tmp/speak-output.opus
+  --output "$OUTPUT_FILE"
 ```
 
 Environment variables are already set: `$LITELLM_HOST`, `$LITELLM_API_KEY`, `$ELEVENLABS_API_KEY`, `$ELEVENLABS_VOICE_ID`.
@@ -69,28 +82,6 @@ cat > "/workspace/ipc/messages/speak-$(date +%s%N).json" << EOF
 {
   "type": "audio",
   "chatJid": "$CHAT_JID",
-  "filePath": "/tmp/speak-output.opus",
-  "caption": "optional text caption"
-}
-EOF
-```
-
-**Important:** The `filePath` must be an absolute path accessible from the host. Since `/tmp` inside the container is not shared, use the group's writable directory instead:
-
-```bash
-OUTPUT_DIR="/workspace/group/audio"
-mkdir -p "$OUTPUT_DIR"
-OUTPUT_FILE="$OUTPUT_DIR/speak-$(date +%s%N).opus"
-
-python3 /home/node/.claude/skills/speak/scripts/tts.py \
-  --text "the text" \
-  --backend local \
-  --output "$OUTPUT_FILE"
-
-cat > "/workspace/ipc/messages/speak-$(date +%s%N).json" << EOF
-{
-  "type": "audio",
-  "chatJid": "$(cat /workspace/ipc/current_chat_jid 2>/dev/null || echo $NANOCLAW_CHAT_JID)",
   "filePath": "$OUTPUT_FILE"
 }
 EOF

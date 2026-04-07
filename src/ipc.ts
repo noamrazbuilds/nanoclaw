@@ -139,19 +139,28 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     `groups/${sourceGroup}/`,
                   );
                 }
+                // Verify the audio file exists and is non-empty before sending
+                if (!fs.existsSync(audioPath)) {
+                  logger.error(
+                    { audioPath, sourceGroup, originalPath: data.filePath },
+                    'IPC audio file not found — skill may have failed or used wrong path',
+                  );
+                } else if (fs.statSync(audioPath).size < 100) {
+                  logger.error(
+                    { audioPath, size: fs.statSync(audioPath).size, sourceGroup },
+                    'IPC audio file is suspiciously small — skill may have produced invalid output',
+                  );
+                }
+
                 const targetGroup = registeredGroups[data.chatJid];
                 if (
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
                   if (deps.sendAudio) {
-                    await deps.sendAudio(
-                      data.chatJid,
-                      audioPath,
-                      data.caption,
-                    );
+                    await deps.sendAudio(data.chatJid, audioPath, data.caption);
                     logger.info(
-                      { chatJid: data.chatJid, sourceGroup },
+                      { chatJid: data.chatJid, sourceGroup, audioPath },
                       'IPC audio sent',
                     );
                   } else {
