@@ -31,7 +31,7 @@ import time
 AMBIENT_AUDIO_DIR = "/ambient-audio"
 
 BG_VOLUME_DEFAULTS = {
-    "brown-noise":    0.14,
+    "brown-noise":    0.10,
     "rain":           0.12,
     "river":          0.10,
     "ocean":          0.10,
@@ -41,6 +41,21 @@ BG_VOLUME_DEFAULTS = {
 
 BG_VOLUME_MIN = 0.05
 BG_VOLUME_MAX = 0.25
+
+# Shorthand aliases for background types
+BG_TYPE_ALIASES = {
+    "brown": "brown-noise",
+    "noise": "brown-noise",
+    "forest": "forest-wind",
+    "wind": "forest-wind",
+    "airplane": "airplane-cabin",
+    "plane": "airplane-cabin",
+    "cabin": "airplane-cabin",
+    "sea": "ocean",
+    "surf": "ocean",
+    "stream": "river",
+    "water": "river",
+}
 
 AMBIENT_FORMAT_PRIORITY = ("wav", "flac", "ogg", "mp3")
 
@@ -220,6 +235,9 @@ def mix_background(speech_path, bg_type, bg_volume=None, work_dir=None):
     was requested but brown noise was used instead. On failure, returns
     the original path (graceful degradation — unmixed audio > no audio).
     """
+    # Resolve shorthand aliases (e.g. "brown" → "brown-noise")
+    bg_type = BG_TYPE_ALIASES.get(bg_type, bg_type)
+
     if work_dir is None:
         work_dir = os.path.dirname(speech_path)
 

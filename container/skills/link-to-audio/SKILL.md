@@ -7,11 +7,24 @@ description: Convert web articles to audio voice notes. When a user sends !liste
 
 Convert web articles into audio voice notes. Extracts the main content (stripping ads, navigation, etc.), converts to speech, and sends back as a voice note.
 
+## MANDATORY: Use the Script
+
+**You MUST use `link2audio.py` for ALL link-to-audio requests. This is not optional.**
+
+- Do NOT call TTS directly (no calling tts.py, no raw ffmpeg, no manual chunking)
+- Do NOT send audio chunks individually via IPC
+- Do NOT implement your own extraction/TTS/mixing pipeline
+- The script handles everything: extraction, chunking, TTS, concatenation, background mixing, and IPC delivery
+- Your ONLY job is to: (1) parse the user's message for parameters, (2) run the script with the right flags, (3) report the result
+
+If the script fails, report the error. Do not try to work around it by doing the steps manually.
+
 ## Triggers
 
 Activate this skill when the message matches any of these patterns:
 
 - `!listen <URL>` or `!read <URL>` — explicit command
+- Natural language like "listen to this", "read this article", "listen:" followed by a URL
 - `!listen <URL> voice:nova` — with voice override
 - `!listen <URL> use elevenlabs` — with backend override
 - `!listen <URL> bg:rain` — with background audio
@@ -23,14 +36,18 @@ Extract from the message:
 - **URL**: the `https://...` link
 - **Voice override**: look for `voice:<name>` (valid: alloy, echo, fable, onyx, nova, shimmer)
 - **Backend override**: look for `use <backend>` or `backend:<name>` (valid: openai, elevenlabs, piper)
-- **Background audio**: look for `bg:<type>` (valid: brown-noise, rain, river, ocean, forest-wind, airplane-cabin)
+- **Background audio**: look for `bg:<type>` (valid: brown-noise, rain, river, ocean, forest-wind, airplane-cabin). Shorthands like `bg:brown`, `bg:noise`, `bg:forest`, `bg:plane` are also accepted.
 - **Background volume**: look for `vol:<number>` (range: 0.05–0.25)
+
+**Important:**
+- Brown noise and rain are *different things*. Brown noise is synthetic low-frequency rumble (generated on-the-fly). Rain is a natural ambient recording. Do not conflate them.
+- Do NOT offer, suggest, or claim support for background types that are not listed above. Only the types in this document are implemented. If the user asks for something not listed, say it's not available yet — do not improvise or approximate.
 
 Defaults: voice=`shimmer`, backend=`openai`, background=none (off).
 
-## Step 2: Run the Pipeline
+## Step 2: Run the Script
 
-Use the orchestrator script. It handles extraction, chunking, TTS, concatenation, optional background mixing, and IPC delivery in one call.
+Run exactly this. No other approach is acceptable.
 
 ```bash
 CHAT_JID=$(cat /workspace/ipc/current_chat_jid 2>/dev/null || echo "$NANOCLAW_CHAT_JID")
@@ -42,7 +59,7 @@ python3 /home/node/.claude/skills/link-to-audio/scripts/link2audio.py \
   --backend "openai"
 ```
 
-With overrides:
+With voice/backend overrides:
 ```bash
 python3 /home/node/.claude/skills/link-to-audio/scripts/link2audio.py \
   --url "THE_URL" \
@@ -59,6 +76,8 @@ python3 /home/node/.claude/skills/link-to-audio/scripts/link2audio.py \
   --background "rain" \
   --bg-volume 0.12
 ```
+
+The script handles IPC delivery internally. Do NOT send the audio file yourself via send_message after running the script — it already did that.
 
 The script prints progress to stdout and outputs a final JSON result line.
 
@@ -91,12 +110,14 @@ Optionally mix a background audio layer under the speech to reduce listener fati
 
 | Type | Source | Default Volume |
 |---|---|---|
-| `brown-noise` | Generated on-the-fly (always available) | 0.14 |
+| `brown-noise` | Generated on-the-fly (always available) | 0.10 |
 | `rain` | Ambient file | 0.12 |
 | `river` | Ambient file | 0.10 |
 | `ocean` | Ambient file | 0.10 |
 | `forest-wind` | Ambient file | 0.12 |
 | `airplane-cabin` | Ambient file | 0.15 |
+
+These are the ONLY available types. No others exist.
 
 - **Brown noise** is always available (synthetic).
 - **Ambient files** are loaded from `/ambient-audio/` in the container (mounted from `~/.ambient-audio/` on host). If the requested ambient file isn't found, it falls back to brown noise with a warning.

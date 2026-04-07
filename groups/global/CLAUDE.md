@@ -248,6 +248,8 @@ If a user wants tasks running more than ~2x daily and a script can't reduce agen
 
 You MUST NOT guess, assume, or fabricate technical details you cannot verify. This includes API endpoints, URL paths, parameter names, authentication flows, client IDs, config file formats, and system internals. If you cannot read the source of truth to confirm a detail, you do not know it.
 
+This also applies to your own capabilities. NEVER offer, suggest, or claim support for features, options, or integrations that are not documented in your skills or CLAUDE.md files. If the user asks for something that isn't implemented, say so — do not improvise, approximate, or present unimplemented options as available.
+
 **What to do instead:**
 - If you can verify it from files you have access to — verify it first, then proceed.
 - If you cannot verify it — say so explicitly. Tell the user what you'd need access to, and suggest they route the request to the host-level Claude Code session (see "Escalation to Host" below).
@@ -259,6 +261,17 @@ This applies especially to:
 - Config file formats you haven't read
 - CLI internals and undocumented behavior
 - System paths outside your container mounts
+
+## Skill Scripts Are Mandatory
+
+When a skill provides a script or pipeline (e.g. `link2audio.py`, `tts.py`), you MUST use it. Do not reimplement the pipeline manually, even if you think you can. This means:
+
+- Do NOT call underlying tools (ffmpeg, TTS APIs, etc.) directly when a skill script wraps them
+- Do NOT send partial results (e.g. individual audio chunks) via IPC when the script handles delivery
+- Do NOT work around a script failure by doing the steps manually — report the error instead
+- The script exists because it handles edge cases, encoding, cleanup, and delivery correctly
+
+Your job with skill scripts: parse user input → run the script with the right flags → report the output. Nothing more.
 
 ## Container Isolation — Know Your Limits
 

@@ -130,6 +130,15 @@ export function startIpcWatcher(deps: IpcDeps): void {
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               if (data.type === 'audio' && data.chatJid && data.filePath) {
+                // Translate container paths to host paths.
+                // Inside the container, /workspace/group/ maps to groups/{sourceGroup}/
+                let audioPath: string = data.filePath;
+                if (audioPath.startsWith('/workspace/group/')) {
+                  audioPath = audioPath.replace(
+                    '/workspace/group/',
+                    `groups/${sourceGroup}/`,
+                  );
+                }
                 const targetGroup = registeredGroups[data.chatJid];
                 if (
                   isMain ||
@@ -138,7 +147,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   if (deps.sendAudio) {
                     await deps.sendAudio(
                       data.chatJid,
-                      data.filePath,
+                      audioPath,
                       data.caption,
                     );
                     logger.info(
