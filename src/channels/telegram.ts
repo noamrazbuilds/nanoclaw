@@ -538,7 +538,10 @@ export class TelegramChannel implements Channel {
   ): Promise<void> {
     if (!this.bot) throw new Error('Telegram bot not connected');
     const chatId = jid.replace('tg:', '');
-    const file = new InputFile(fs.readFileSync(filePath), filename || path.basename(filePath));
+    const file = new InputFile(
+      fs.readFileSync(filePath),
+      filename || path.basename(filePath),
+    );
     await this.bot.api.sendDocument(chatId, file, {
       ...(caption ? { caption } : {}),
     });

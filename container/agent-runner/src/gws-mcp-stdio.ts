@@ -348,9 +348,11 @@ IMPORTANT — WRITE OPERATIONS REQUIRE CONFIRMATION:
 When you call this with a write operation (send, create, update, delete, etc.), the tool will return a confirmation_required response with a nonce. You MUST then call gws_run again with the confirmed_nonce to execute.
 
 Confirmation rules:
-• If the user explicitly requested the action (e.g., "move my 3pm meeting to 4pm"), the user's message IS the confirmation — immediately re-call with the nonce. No need to ask again.
-• If you're acting on your own initiative or the action is ambiguous/risky (e.g., deleting data, sending to contacts), use send_message to describe what will happen and wait for the user to approve before re-calling with the nonce.
+• EMAIL (gmail +send, +reply, +forward): ALWAYS require explicit user confirmation. Use send_message to describe the recipient, subject, and a summary of the body, then wait for the user to approve before re-calling with the nonce. NEVER self-confirm email operations — even if the user asked for something that involves email, confirm the specific send. NEVER guess or fabricate email addresses.
+• Other write operations: If the user explicitly requested the action (e.g., "move my 3pm meeting to 4pm"), the user's message IS the confirmation — immediately re-call with the nonce. No need to ask again.
+• If you're acting on your own initiative or the action is ambiguous/risky (e.g., deleting data), use send_message to describe what will happen and wait for the user to approve before re-calling with the nonce.
 • The command in the second call does NOT need to be identical to the first — the nonce itself is the authorization token.
+• NEVER send email as a "fallback" when another delivery method fails. Report the failure and let the user decide.
 
 Read operations (list, get, search, read, triage) execute immediately.
 

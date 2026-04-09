@@ -217,35 +217,47 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     },
                     'IPC document file is empty',
                   );
-                }
-
-                const targetGroup = registeredGroups[data.chatJid];
-                if (
-                  isMain ||
-                  (targetGroup && targetGroup.folder === sourceGroup)
-                ) {
-                  if (deps.sendDocument) {
-                    await deps.sendDocument(
-                      data.chatJid,
-                      docPath,
-                      data.caption,
-                      data.filename,
-                    );
-                    logger.info(
-                      { chatJid: data.chatJid, sourceGroup, docPath },
-                      'IPC document sent',
-                    );
+                } else {
+                  const targetGroup = registeredGroups[data.chatJid];
+                  if (
+                    isMain ||
+                    (targetGroup && targetGroup.folder === sourceGroup)
+                  ) {
+                    if (deps.sendDocument) {
+                      try {
+                        await deps.sendDocument(
+                          data.chatJid,
+                          docPath,
+                          data.caption,
+                          data.filename,
+                        );
+                        logger.info(
+                          { chatJid: data.chatJid, sourceGroup, docPath },
+                          'IPC document sent',
+                        );
+                      } catch (docErr) {
+                        logger.error(
+                          {
+                            chatJid: data.chatJid,
+                            sourceGroup,
+                            docPath,
+                            err: docErr,
+                          },
+                          'IPC document send failed',
+                        );
+                      }
+                    } else {
+                      logger.warn(
+                        { chatJid: data.chatJid },
+                        'Document IPC received but no sendDocument handler',
+                      );
+                    }
                   } else {
                     logger.warn(
-                      { chatJid: data.chatJid },
-                      'Document IPC received but no sendDocument handler',
+                      { chatJid: data.chatJid, sourceGroup },
+                      'Unauthorized IPC document attempt blocked',
                     );
                   }
-                } else {
-                  logger.warn(
-                    { chatJid: data.chatJid, sourceGroup },
-                    'Unauthorized IPC document attempt blocked',
-                  );
                 }
               } else if (data.type === 'message' && data.chatJid && data.text) {
                 // Rate limit check

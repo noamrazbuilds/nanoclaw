@@ -62,6 +62,13 @@ Write operations (send, create, update, delete, etc.) require user confirmation:
 
 **Never skip the confirmation flow for write operations.** The tool enforces this — write commands without a valid nonce will not execute.
 
+### Email — ALWAYS confirm with user
+
+Email operations (gmail +send, +reply, +forward) MUST ALWAYS go through user confirmation — no exceptions. Even if the user asked for something that involves email, confirm the specific recipient, subject, and body before sending. NEVER:
+- Send email as a "fallback" when another delivery method fails
+- Guess or fabricate email addresses
+- Self-confirm email operations
+
 Read operations (list, get, search, read, triage) execute immediately without confirmation.
 
 ## Audit Log

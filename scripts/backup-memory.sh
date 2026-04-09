@@ -170,19 +170,22 @@ run_ai_check() {
 
 Signs of corruption or problems:
 - Key sections completely wiped or replaced with unrelated content
-- Preferences contradicting themselves (e.g. a rule saying 'always guess' when the previous version said 'never guess')
+- Existing preferences reversed (e.g. a rule previously saying 'never guess' now says 'always guess')
 - Files drastically shorter with important content missing (not just reformatted or moved to another file)
 - Garbled text, encoding issues, or nonsense content
 - Identity information changed (name, email, contact info altered)
 - Communication style rules reversed or removed without apparent reason
 
-NOT corruption (normal changes):
-- New preferences added
+NOT corruption (normal changes — do NOT flag these):
+- New preferences or rules added (even strict-sounding ones like 'X is mandatory')
+- New sections added to existing files
 - Wording refined while keeping the same meaning
 - Files reorganized or restructured (content moved between files)
-- New files added
+- New files added (build specs, feature docs, temp files — all normal)
 - Minor formatting changes
 - A file shrinking because its content was moved to a shared/global file
+
+IMPORTANT: Only flag ALERT if existing content was corrupted, reversed, or destroyed. New additions are NEVER corruption — they are normal evolution of the assistant's instructions.
 
 Respond with EXACTLY one line:
 - If everything looks fine: OK

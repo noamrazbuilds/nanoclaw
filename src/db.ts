@@ -156,9 +156,7 @@ function createSchema(database: Database.Database): void {
 
   // Add session metadata columns for age tracking and skill-change invalidation
   try {
-    database.exec(
-      `ALTER TABLE sessions ADD COLUMN created_at TEXT DEFAULT ''`,
-    );
+    database.exec(`ALTER TABLE sessions ADD COLUMN created_at TEXT DEFAULT ''`);
   } catch {
     /* column already exists */
   }
