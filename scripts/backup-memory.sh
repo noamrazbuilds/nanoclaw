@@ -27,7 +27,7 @@ TELEGRAM_CHAT_ID="145958767"
 
 # Hardcoded fallback token (last known working value)
 FALLBACK_TOKEN="aoc_87445a1dc602e369118eb53e8163d6acefb2b01a9b76c6c5c2e2cbab4edb5869"
-ONECLI_CA="/tmp/onecli-proxy-ca.pem"
+ONECLI_CA="$PROJECT_ROOT/data/onecli-proxy-ca.pem"
 
 log() {
   echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >> "$LOG_FILE"
@@ -251,6 +251,12 @@ except Exception as e:
 
 mkdir -p "$BACKUP_ROOT" "$(dirname "$LOG_FILE")" "$(dirname "$TOKEN_CACHE")"
 log "Starting memory backup"
+
+# Ensure OneCLI CA cert exists (extract from container if missing)
+if [ ! -f "$ONECLI_CA" ]; then
+  log "CA cert missing — extracting from OneCLI container"
+  docker compose -f "$HOME/.onecli/docker-compose.yml" exec -T app cat /app/data/gateway/ca.pem > "$ONECLI_CA" 2>/dev/null || true
+fi
 
 # Resolve OneCLI token (dynamic → cache → fallback)
 ONECLI_TOKEN=$(resolve_onecli_token)
