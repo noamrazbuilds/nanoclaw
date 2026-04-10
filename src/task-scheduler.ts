@@ -86,7 +86,7 @@ async function runTask(
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     // Stop retry churn for malformed legacy rows.
-    updateTask(task.id, { status: 'paused' });
+    updateTask(task.id, { status: 'paused' }, 'scheduler');
     logger.error(
       { taskId: task.id, groupFolder: task.group_folder, error },
       'Task has invalid group folder',
@@ -188,8 +188,9 @@ async function runTask(
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          if (!task.suppress_chat_output) {
+            await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          }
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {

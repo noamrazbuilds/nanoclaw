@@ -35,6 +35,7 @@ const MAX_OUTPUT_SIZE = 100 * 1024; // 100KB
 const GWS_CREDS_PATH = '/home/node/.config/gws/credentials.json';
 const GWS_CLIENT_PATH = '/home/node/.config/gws/client_secret.json';
 const IS_MAIN = process.env.NANOCLAW_IS_MAIN === '1';
+const IS_SCHEDULED_TASK = process.env.NANOCLAW_IS_SCHEDULED_TASK === '1';
 
 // --- Token management ---
 // gws expects encrypted credential storage which doesn't work in containers.
@@ -410,7 +411,8 @@ Examples:
     }
 
     // Write operations require confirmation
-    if (classification === 'write') {
+    // Scheduled tasks auto-confirm: the schedule itself is the user's authorization.
+    if (classification === 'write' && !IS_SCHEDULED_TASK) {
       if (!confirmedNonce) {
         // First call — return confirmation request with nonce
         const nonce = generateNonce(command);

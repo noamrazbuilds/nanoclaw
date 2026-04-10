@@ -549,10 +549,11 @@ export async function processTaskIpc(
           schedule_value: data.schedule_value,
           context_mode: contextMode,
           model: data.model || null,
+          suppress_chat_output: 0,
           next_run: nextRun,
           status: 'active',
           created_at: new Date().toISOString(),
-        });
+        }, `ipc:${sourceGroup}`);
         logger.info(
           { taskId, sourceGroup, targetFolder, contextMode },
           'Task created via IPC',
@@ -565,7 +566,7 @@ export async function processTaskIpc(
       if (data.taskId) {
         const task = getTaskById(data.taskId);
         if (task && (isMain || task.group_folder === sourceGroup)) {
-          updateTask(data.taskId, { status: 'paused' });
+          updateTask(data.taskId, { status: 'paused' }, `ipc:${sourceGroup}`);
           logger.info(
             { taskId: data.taskId, sourceGroup },
             'Task paused via IPC',
@@ -584,7 +585,7 @@ export async function processTaskIpc(
       if (data.taskId) {
         const task = getTaskById(data.taskId);
         if (task && (isMain || task.group_folder === sourceGroup)) {
-          updateTask(data.taskId, { status: 'active' });
+          updateTask(data.taskId, { status: 'active' }, `ipc:${sourceGroup}`);
           logger.info(
             { taskId: data.taskId, sourceGroup },
             'Task resumed via IPC',
@@ -603,7 +604,7 @@ export async function processTaskIpc(
       if (data.taskId) {
         const task = getTaskById(data.taskId);
         if (task && (isMain || task.group_folder === sourceGroup)) {
-          deleteTask(data.taskId);
+          deleteTask(data.taskId, `ipc:${sourceGroup}`);
           logger.info(
             { taskId: data.taskId, sourceGroup },
             'Task cancelled via IPC',
@@ -636,9 +637,18 @@ export async function processTaskIpc(
           break;
         }
 
+        // Prompt and script modifications are blocked from IPC to prevent
+        // agent self-modification / instruction drift. These fields can only
+        // be changed by the user directly (via DB or CLI).
+        if (data.prompt !== undefined || data.script !== undefined) {
+          logger.warn(
+            { taskId: data.taskId, sourceGroup },
+            'Task prompt/script modification blocked — agents cannot rewrite their own instructions',
+          );
+          break;
+        }
+
         const updates: Parameters<typeof updateTask>[1] = {};
-        if (data.prompt !== undefined) updates.prompt = data.prompt;
-        if (data.script !== undefined) updates.script = data.script || null;
         if (data.schedule_type !== undefined)
           updates.schedule_type = data.schedule_type as
             | 'cron'
@@ -676,7 +686,7 @@ export async function processTaskIpc(
           }
         }
 
-        updateTask(data.taskId, updates);
+        updateTask(data.taskId, updates, `ipc:${sourceGroup}`);
         logger.info(
           { taskId: data.taskId, sourceGroup, updates },
           'Task updated via IPC',

@@ -67,6 +67,7 @@ export interface ScheduledTask {
   schedule_value: string;
   context_mode: 'group' | 'isolated';
   model?: string | null;
+  suppress_chat_output?: number;
   next_run: string | null;
   last_run: string | null;
   last_result: string | null;
@@ -108,8 +109,13 @@ export interface Channel {
   // Optional: reaction support
   sendReaction?(
     chatJid: string,
-    messageKey: { id: string; remoteJid: string; fromMe?: boolean; participant?: string },
-    emoji: string
+    messageKey: {
+      id: string;
+      remoteJid: string;
+      fromMe?: boolean;
+      participant?: string;
+    },
+    emoji: string,
   ): Promise<void>;
   reactToLatestMessage?(chatJid: string, emoji: string): Promise<void>;
 }

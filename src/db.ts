@@ -130,6 +130,15 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  // Add suppress_chat_output column — hard gate to prevent task output leaking to chat
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN suppress_chat_output INTEGER DEFAULT 0`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
   // Add is_bot_message column if it doesn't exist (migration for existing DBs)
   try {
     database.exec(
@@ -177,6 +186,21 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* column already exists */
   }
+
+  // Task audit log — immutable record of all task mutations
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS task_audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      source TEXT NOT NULL,
+      before_snapshot TEXT,
+      after_snapshot TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_audit_task_id ON task_audit_log(task_id);
+    CREATE INDEX IF NOT EXISTS idx_task_audit_timestamp ON task_audit_log(timestamp);
+  `);
 }
 
 export function initDatabase(): void {
@@ -398,14 +422,20 @@ export function getMessagesSince(
 
 export function getMessageFromMe(messageId: string, chatJid: string): boolean {
   const row = db
-    .prepare(`SELECT is_from_me FROM messages WHERE id = ? AND chat_jid = ? LIMIT 1`)
+    .prepare(
+      `SELECT is_from_me FROM messages WHERE id = ? AND chat_jid = ? LIMIT 1`,
+    )
     .get(messageId, chatJid) as { is_from_me: number | null } | undefined;
   return row?.is_from_me === 1;
 }
 
-export function getLatestMessage(chatJid: string): { id: string; fromMe: boolean } | undefined {
+export function getLatestMessage(
+  chatJid: string,
+): { id: string; fromMe: boolean } | undefined {
   const row = db
-    .prepare(`SELECT id, is_from_me FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT 1`)
+    .prepare(
+      `SELECT id, is_from_me FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT 1`,
+    )
     .get(chatJid) as { id: string; is_from_me: number | null } | undefined;
   if (!row) return undefined;
   return { id: row.id, fromMe: row.is_from_me === 1 };
@@ -414,30 +444,30 @@ export function getLatestMessage(chatJid: string): { id: string; fromMe: boolean
 export function storeReaction(reaction: Reaction): void {
   if (!reaction.emoji) {
     db.prepare(
-      `DELETE FROM reactions WHERE message_id = ? AND message_chat_jid = ? AND reactor_jid = ?`
+      `DELETE FROM reactions WHERE message_id = ? AND message_chat_jid = ? AND reactor_jid = ?`,
     ).run(reaction.message_id, reaction.message_chat_jid, reaction.reactor_jid);
     return;
   }
   db.prepare(
     `INSERT OR REPLACE INTO reactions (message_id, message_chat_jid, reactor_jid, reactor_name, emoji, timestamp)
-     VALUES (?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?)`,
   ).run(
     reaction.message_id,
     reaction.message_chat_jid,
     reaction.reactor_jid,
     reaction.reactor_name || null,
     reaction.emoji,
-    reaction.timestamp
+    reaction.timestamp,
   );
 }
 
 export function getReactionsForMessage(
   messageId: string,
-  chatJid: string
+  chatJid: string,
 ): Reaction[] {
   return db
     .prepare(
-      `SELECT * FROM reactions WHERE message_id = ? AND message_chat_jid = ? ORDER BY timestamp`
+      `SELECT * FROM reactions WHERE message_id = ? AND message_chat_jid = ? ORDER BY timestamp`,
     )
     .all(messageId, chatJid) as Reaction[];
 }
@@ -445,8 +475,10 @@ export function getReactionsForMessage(
 export function getMessagesByReaction(
   reactorJid: string,
   emoji: string,
-  chatJid?: string
-): Array<Reaction & { content: string; sender_name: string; message_timestamp: string }> {
+  chatJid?: string,
+): Array<
+  Reaction & { content: string; sender_name: string; message_timestamp: string }
+> {
   const sql = chatJid
     ? `
       SELECT r.*, m.content, m.sender_name, m.timestamp as message_timestamp
@@ -463,7 +495,11 @@ export function getMessagesByReaction(
       ORDER BY r.timestamp DESC
     `;
 
-  type Result = Reaction & { content: string; sender_name: string; message_timestamp: string };
+  type Result = Reaction & {
+    content: string;
+    sender_name: string;
+    message_timestamp: string;
+  };
   return chatJid
     ? (db.prepare(sql).all(reactorJid, emoji, chatJid) as Result[])
     : (db.prepare(sql).all(reactorJid, emoji) as Result[]);
@@ -471,11 +507,11 @@ export function getMessagesByReaction(
 
 export function getReactionsByUser(
   reactorJid: string,
-  limit: number = 50
+  limit: number = 50,
 ): Reaction[] {
   return db
     .prepare(
-      `SELECT * FROM reactions WHERE reactor_jid = ? ORDER BY timestamp DESC LIMIT ?`
+      `SELECT * FROM reactions WHERE reactor_jid = ? ORDER BY timestamp DESC LIMIT ?`,
     )
     .all(reactorJid, limit) as Reaction[];
 }
@@ -505,13 +541,34 @@ export function getReactionStats(chatJid?: string): Array<{
     : (db.prepare(sql).all() as Result[]);
 }
 
+function logTaskAudit(
+  taskId: string,
+  action: 'create' | 'update' | 'delete',
+  source: string,
+  before: ScheduledTask | null | undefined,
+  after: Partial<ScheduledTask> | null,
+): void {
+  db.prepare(
+    `INSERT INTO task_audit_log (timestamp, task_id, action, source, before_snapshot, after_snapshot)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    new Date().toISOString(),
+    taskId,
+    action,
+    source,
+    before ? JSON.stringify(before) : null,
+    after ? JSON.stringify(after) : null,
+  );
+}
+
 export function createTask(
   task: Omit<ScheduledTask, 'last_run' | 'last_result'>,
+  source = 'ipc',
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, script, schedule_type, schedule_value, context_mode, model, next_run, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, script, schedule_type, schedule_value, context_mode, model, suppress_chat_output, next_run, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
@@ -523,10 +580,12 @@ export function createTask(
     task.schedule_value,
     task.context_mode || 'isolated',
     task.model || null,
+    task.suppress_chat_output ? 1 : 0,
     task.next_run,
     task.status,
     task.created_at,
   );
+  logTaskAudit(task.id, 'create', source, null, task as Partial<ScheduledTask>);
 }
 
 export function getTaskById(id: string): ScheduledTask | undefined {
@@ -559,10 +618,12 @@ export function updateTask(
       | 'schedule_type'
       | 'schedule_value'
       | 'model'
+      | 'suppress_chat_output'
       | 'next_run'
       | 'status'
     >
   >,
+  source = 'ipc',
 ): void {
   const fields: string[] = [];
   const values: unknown[] = [];
@@ -587,6 +648,10 @@ export function updateTask(
     fields.push('model = ?');
     values.push(updates.model || null);
   }
+  if (updates.suppress_chat_output !== undefined) {
+    fields.push('suppress_chat_output = ?');
+    values.push(updates.suppress_chat_output);
+  }
   if (updates.next_run !== undefined) {
     fields.push('next_run = ?');
     values.push(updates.next_run);
@@ -598,13 +663,25 @@ export function updateTask(
 
   if (fields.length === 0) return;
 
+  // Snapshot before state for audit (only for significant changes, not next_run/status)
+  const significantKeys = ['prompt', 'script', 'schedule_type', 'schedule_value', 'model'] as const;
+  const hasSignificantChange = significantKeys.some((k) => updates[k] !== undefined);
+  if (hasSignificantChange) {
+    const before = getTaskById(id);
+    logTaskAudit(id, 'update', source, before ?? null, updates as Partial<ScheduledTask>);
+  }
+
   values.push(id);
   db.prepare(
     `UPDATE scheduled_tasks SET ${fields.join(', ')} WHERE id = ?`,
   ).run(...values);
 }
 
-export function deleteTask(id: string): void {
+export function deleteTask(id: string, source = 'ipc'): void {
+  const before = getTaskById(id);
+  if (before) {
+    logTaskAudit(id, 'delete', source, before, null);
+  }
   // Delete child records first (FK constraint)
   db.prepare('DELETE FROM task_run_logs WHERE task_id = ?').run(id);
   db.prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(id);
@@ -783,6 +860,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     added_at: string;
     container_config: string | null;
     requires_trigger: number | null;
+    is_main: number | null;
   }>;
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
@@ -803,6 +881,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
         : undefined,
       requiresTrigger:
         row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+      isMain: row.is_main === 1,
     };
   }
   return result;
