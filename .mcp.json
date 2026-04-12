@@ -3,6 +3,10 @@
     "context7": {
       "command": "npx",
       "args": ["-y", "@upstash/context7-mcp"]
+    },
+    "anylist": {
+      "command": "bash",
+      "args": ["/workspace/project/vendor/anylist-mcp/run.sh"]
     }
   }
 }

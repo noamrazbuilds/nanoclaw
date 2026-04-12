@@ -139,6 +139,18 @@ function buildVolumeMounts(
       readonly: false,
     });
 
+    // Mount .mcp.json into the group working directory so the Claude SDK
+    // discovers MCP servers (it walks up from CWD, which is /workspace/group,
+    // not a child of /workspace/project).
+    const mcpJson = path.join(projectRoot, '.mcp.json');
+    if (fs.existsSync(mcpJson)) {
+      mounts.push({
+        hostPath: mcpJson,
+        containerPath: '/workspace/group/.mcp.json',
+        readonly: true,
+      });
+    }
+
     // Global memory directory (read-write overlay on top of the read-only
     // project mount). This lets the main agent write to global memory.
     const globalDir = path.join(GROUPS_DIR, 'global');

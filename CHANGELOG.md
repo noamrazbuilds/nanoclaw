@@ -4,6 +4,11 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## [1.2.39] - 2026-04-12
+
+- Added AnyList MCP server for shopping lists, recipes, and meal planning. Installed at `vendor/anylist-mcp/` with credentials sourced from `.env.local` (gitignored).
+- Fixed `.mcp.json` not being discovered inside agent containers — the Claude SDK walks up from CWD (`/workspace/group`) which isn't a child of `/workspace/project`. Now mounts `.mcp.json` directly into the group working directory.
+
 ## [1.2.38] - 2026-04-10
 
 - Added `suppress_chat_output` flag on scheduled tasks — hard gate at the scheduler level to prevent task output leaking to chat, regardless of agent behavior. Set on the daily update task (email-only delivery).
