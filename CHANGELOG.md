@@ -4,6 +4,16 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## [1.2.38] - 2026-04-10
+
+- Added `suppress_chat_output` flag on scheduled tasks — hard gate at the scheduler level to prevent task output leaking to chat, regardless of agent behavior. Set on the daily update task (email-only delivery).
+- Blocked agent self-modification of task prompts and scripts via IPC to prevent instruction drift.
+- Added `task_audit_log` table for immutable record of all task create/update/delete operations with before/after snapshots.
+- Fixed `getAllRegisteredGroups()` not reading `is_main` column from DB, causing `group.isMain` to always be `undefined` and breaking GWS write access for scheduled tasks.
+- Scheduled tasks now skip GWS nonce confirmation (the schedule itself is the user's authorization).
+- Added reMarkable guardrail: no sends unless explicitly requested by the user.
+- Made gauntlet skill available in WhatsApp and Telegram containers (copied to `container/skills/`).
+
 ## [1.2.37] - 2026-04-07
 
 - Added `document` IPC message type for sending files (PDF, DOCX, etc.) from agent skills to WhatsApp and Telegram. New `sendDocument` method on both channels, with container path translation, file validation, and authorization matching the existing `sendAudio` pattern.
