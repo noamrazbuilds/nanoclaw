@@ -100,6 +100,35 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+/**
+ * Rewrite .mcp.json for container use: resolve relative paths in server args
+ * to absolute container paths under /workspace/project/. Returns the path to
+ * a temp file with the rewritten content.
+ */
+function rewriteMcpPathsForContainer(mcpJsonPath: string): string {
+  const projectRoot = path.dirname(mcpJsonPath);
+  const raw = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8'));
+  const servers = raw.mcpServers ?? {};
+  for (const server of Object.values(servers) as Array<{ args?: string[] }>) {
+    if (!server.args) continue;
+    server.args = server.args.map((arg) => {
+      // Rewrite repo-relative file paths (e.g. "vendor/foo/run.sh") to
+      // container absolute paths. Only rewrite if the path resolves to an
+      // actual file/dir in the project — avoids mangling npm package names.
+      if (!arg.startsWith('/') && !arg.startsWith('-')) {
+        const resolved = path.join(projectRoot, arg);
+        if (fs.existsSync(resolved)) {
+          return `/workspace/project/${arg}`;
+        }
+      }
+      return arg;
+    });
+  }
+  const outPath = path.join(DATA_DIR, '.mcp-container.json');
+  fs.writeFileSync(outPath, JSON.stringify(raw, null, 2));
+  return outPath;
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
@@ -142,10 +171,13 @@ function buildVolumeMounts(
     // Mount .mcp.json into the group working directory so the Claude SDK
     // discovers MCP servers (it walks up from CWD, which is /workspace/group,
     // not a child of /workspace/project).
+    // The host .mcp.json uses repo-relative paths (e.g. vendor/anylist-mcp/run.sh).
+    // Rewrite them to absolute container paths under /workspace/project/.
     const mcpJson = path.join(projectRoot, '.mcp.json');
     if (fs.existsSync(mcpJson)) {
+      const containerMcpJson = rewriteMcpPathsForContainer(mcpJson);
       mounts.push({
-        hostPath: mcpJson,
+        hostPath: containerMcpJson,
         containerPath: '/workspace/group/.mcp.json',
         readonly: true,
       });
