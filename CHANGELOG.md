@@ -4,6 +4,16 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## [1.2.40] - 2026-04-13
+
+- Added Model Arena: a dedicated Telegram group where 5 AI models (DeepSeek V3.2, Kimi K2.5, MiniMax M2.5, Qwen Coder 3B, Gemma 4B) respond to the same prompt in parallel via independent Telegram bots. Supports broadcast (all bots), @mention (targeted), and reply-to (conversation continuation) routing.
+- Full logging to SQLite: sessions, per-model responses, tokens, latency, cost, user ratings (thumbs up/down reactions), and conversation trees via `parent_log_id` chain.
+- Automated daily grading (2 AM) via Claude Sonnet on a 5-dimension rubric (correctness, completeness, code quality, clarity, tool efficiency) with pre-computed aggregates.
+- Weekly arena report (Friday 8 AM) + on-demand reports via The Dude.
+- LiteLLM fallbacks explicitly disabled per-request (`fallbacks: []`) to ensure pure model comparison.
+- Switched LiteLLM Docker to `network_mode: host` to enable Ollama connectivity for local models.
+- Fixed OpenRouter Kimi model ID (`moonshot/kimi-k2` → `moonshotai/kimi-k2.5`).
+
 ## [1.2.39] - 2026-04-12
 
 - Added AnyList MCP server for shopping lists, recipes, and meal planning. Installed at `vendor/anylist-mcp/` with credentials sourced from `.env.local` (gitignored).

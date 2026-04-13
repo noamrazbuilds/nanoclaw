@@ -201,6 +201,96 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_task_audit_task_id ON task_audit_log(task_id);
     CREATE INDEX IF NOT EXISTS idx_task_audit_timestamp ON task_audit_log(timestamp);
   `);
+
+  // --- Model Arena tables ---
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS arena_sessions (
+      session_id      TEXT PRIMARY KEY,
+      user_id         INTEGER NOT NULL,
+      user_message    TEXT NOT NULL,
+      routing_type    TEXT NOT NULL,
+      targeted_bots   TEXT,
+      bot_count       INTEGER NOT NULL,
+      grading_status  TEXT DEFAULT 'pending',
+      system_prompt_version TEXT NOT NULL,
+      timestamp       TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_arena_sessions_time   ON arena_sessions(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_arena_sessions_status ON arena_sessions(grading_status);
+
+    CREATE TABLE IF NOT EXISTS arena_logs (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id          TEXT NOT NULL,
+      bot_id              TEXT NOT NULL,
+      model               TEXT NOT NULL,
+      chat_id             INTEGER NOT NULL,
+      user_id             INTEGER NOT NULL,
+      telegram_message_id INTEGER,
+      parent_log_id       INTEGER REFERENCES arena_logs(id),
+      prompt_text         TEXT NOT NULL,
+      history_json        TEXT NOT NULL,
+      response_text       TEXT,
+      tool_calls_json     TEXT,
+      tokens_in           INTEGER,
+      tokens_out          INTEGER,
+      cost_usd            REAL,
+      litellm_request_id  TEXT,
+      latency_ms          INTEGER NOT NULL,
+      user_rating         INTEGER DEFAULT 0,
+      user_replied        INTEGER NOT NULL DEFAULT 0,
+      is_broadcast        INTEGER NOT NULL DEFAULT 1,
+      error               TEXT,
+      timestamp           TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_arena_logs_session  ON arena_logs(session_id);
+    CREATE INDEX IF NOT EXISTS idx_arena_logs_timestamp ON arena_logs(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_arena_logs_bot_time ON arena_logs(bot_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_arena_logs_message  ON arena_logs(telegram_message_id, chat_id);
+    CREATE INDEX IF NOT EXISTS idx_arena_logs_parent   ON arena_logs(parent_log_id);
+
+    CREATE TABLE IF NOT EXISTS arena_grades (
+      id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+      arena_log_id          INTEGER NOT NULL REFERENCES arena_logs(id),
+      session_id            TEXT NOT NULL,
+      bot_id                TEXT NOT NULL,
+      grader_model          TEXT NOT NULL,
+      grader_version        TEXT NOT NULL,
+      score_total           REAL NOT NULL,
+      score_correctness     REAL,
+      score_completeness    REAL,
+      score_code_quality    REAL,
+      score_clarity         REAL,
+      score_tool_efficiency REAL,
+      grade_rationale       TEXT,
+      graded_at             TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(arena_log_id, grader_model)
+    );
+    CREATE INDEX IF NOT EXISTS idx_arena_grades_session ON arena_grades(session_id);
+    CREATE INDEX IF NOT EXISTS idx_arena_grades_log     ON arena_grades(arena_log_id);
+
+    CREATE TABLE IF NOT EXISTS arena_aggregates (
+      id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+      model                  TEXT NOT NULL,
+      period_type            TEXT NOT NULL,
+      period_start           TEXT NOT NULL,
+      period_end             TEXT NOT NULL,
+      total_sessions         INTEGER DEFAULT 0,
+      win_rate               REAL,
+      avg_overall_score      REAL,
+      avg_cost_per_session   REAL,
+      avg_latency_ms         REAL,
+      user_rating_ratio      REAL,
+      user_reply_rate        REAL,
+      tool_call_success_rate REAL,
+      response_count         INTEGER,
+      created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(model, period_type, period_start)
+    );
+  `);
+
+  // Enable WAL mode for concurrent arena writes (5 bots writing in parallel)
+  database.pragma('journal_mode = WAL');
 }
 
 export function initDatabase(): void {
@@ -212,6 +302,11 @@ export function initDatabase(): void {
 
   // Migrate from JSON files if they exist
   migrateJsonState();
+}
+
+/** Get the database instance (for arena module). */
+export function getDatabase(): Database.Database {
+  return db;
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */
@@ -664,11 +759,25 @@ export function updateTask(
   if (fields.length === 0) return;
 
   // Snapshot before state for audit (only for significant changes, not next_run/status)
-  const significantKeys = ['prompt', 'script', 'schedule_type', 'schedule_value', 'model'] as const;
-  const hasSignificantChange = significantKeys.some((k) => updates[k] !== undefined);
+  const significantKeys = [
+    'prompt',
+    'script',
+    'schedule_type',
+    'schedule_value',
+    'model',
+  ] as const;
+  const hasSignificantChange = significantKeys.some(
+    (k) => updates[k] !== undefined,
+  );
   if (hasSignificantChange) {
     const before = getTaskById(id);
-    logTaskAudit(id, 'update', source, before ?? null, updates as Partial<ScheduledTask>);
+    logTaskAudit(
+      id,
+      'update',
+      source,
+      before ?? null,
+      updates as Partial<ScheduledTask>,
+    );
   }
 
   values.push(id);

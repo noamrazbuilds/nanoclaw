@@ -456,6 +456,36 @@ Tell Noam the file has been queued and will appear on his tablet within 5 minute
 
 Noam's handwritten notes sync from his reMarkable to PKA automatically (hourly). They appear in the vault tagged `remarkable/handwritten` and are fully searchable. You don't need to do anything special — just use PKA search normally.
 
+---
+
+## Model Arena
+
+A Telegram group where 5 AI models respond to the same prompt in parallel. You can generate on-demand reports.
+
+### On-demand reports
+
+When Noam asks for an arena report (e.g. "arena report last 3 days"), generate it via IPC:
+
+```bash
+echo '{"type": "arena_report", "days": 3}' > /workspace/ipc/tasks/arena_report_$(date +%s).json
+```
+
+The arena module on the host will generate the report and return it. If the IPC response contains the report text, send it to Noam.
+
+### Arena bots
+
+| Bot | Model |
+|-----|-------|
+| DeepSeek | deepseek-v3.2 (cloud) |
+| Kimi | kimi-k2.5 (cloud, OpenRouter) |
+| MiniMax | minimax-m2.5 (cloud) |
+| Qwen | qwen2.5-coder:3b (local Ollama) |
+| Gemma | gemma3:4b (local Ollama) |
+
+Arena group chat_id: -1003935516896. Daily grading at 2 AM, weekly report at 8 AM Friday (auto-delivered).
+
+---
+
 ### reMarkable folder structure
 
 ```

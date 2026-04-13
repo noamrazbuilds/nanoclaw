@@ -1105,6 +1105,8 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     stopOAuthRefreshMonitor();
+    const { arenaOrchestrator: arena } = await import('./arena/index.js');
+    await arena.stop();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     await statusTracker.shutdown();
@@ -1240,6 +1242,10 @@ async function main(): Promise<void> {
     const { initBotPool } = await import('./channels/telegram.js');
     await initBotPool(TELEGRAM_BOT_POOL);
   }
+
+  // Start Model Arena (independent of channel system — polls Telegram directly)
+  const { arenaOrchestrator } = await import('./arena/index.js');
+  await arenaOrchestrator.start();
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({

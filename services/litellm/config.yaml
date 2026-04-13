@@ -97,7 +97,7 @@ model_list:
   # ── Moonshot / Kimi ─────────────────────────────────────────
   - model_name: kimi-k2.5
     litellm_params:
-      model: openrouter/moonshot/kimi-k2
+      model: openrouter/moonshotai/kimi-k2.5
       api_key: os.environ/OPENROUTER_API_KEY
 
   # ── Gemini Flash-Lite (cheap heartbeat tasks only) ──────────
@@ -121,12 +121,12 @@ model_list:
   - model_name: local-coder
     litellm_params:
       model: ollama/qwen2.5-coder:3b
-      api_base: http://host.docker.internal:11434
+      api_base: http://localhost:11434
 
   - model_name: local-general
     litellm_params:
       model: ollama/gemma3:4b
-      api_base: http://host.docker.internal:11434
+      api_base: http://localhost:11434
 
 router_settings:
   # Claude Code SDK expands short model names (e.g. "haiku") to full Anthropic
