@@ -74,10 +74,7 @@ export async function runDailyGrading(): Promise<void> {
     }
 
     try {
-      const grades = await gradeSessionWithRetry(
-        session.session_id,
-        responses,
-      );
+      const grades = await gradeSessionWithRetry(session.session_id, responses);
       arenaDb.insertGrades(grades);
       arenaDb.updateSessionStatus(session.session_id, 'graded');
       logger.info(
@@ -101,27 +98,24 @@ async function gradeSessionWithRetry(
   for (let attempt = 0; attempt < GRADER_MAX_RETRIES; attempt++) {
     try {
       const prompt = buildGraderPrompt(responses);
-      const result = await fetch(
-        `${ARENA_LITELLM_URL}/chat/completions`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(ARENA_LITELLM_KEY
-              ? { Authorization: `Bearer ${ARENA_LITELLM_KEY}` }
-              : {}),
-          },
-          body: JSON.stringify({
-            model: GRADER_MODEL,
-            messages: [
-              { role: 'system', content: GRADER_SYSTEM_PROMPT },
-              { role: 'user', content: prompt },
-            ],
-            response_format: { type: 'json_object' },
-            metadata: { arena_grader: true, session_id: sessionId },
-          }),
+      const result = await fetch(`${ARENA_LITELLM_URL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(ARENA_LITELLM_KEY
+            ? { Authorization: `Bearer ${ARENA_LITELLM_KEY}` }
+            : {}),
         },
-      );
+        body: JSON.stringify({
+          model: GRADER_MODEL,
+          messages: [
+            { role: 'system', content: GRADER_SYSTEM_PROMPT },
+            { role: 'user', content: prompt },
+          ],
+          response_format: { type: 'json_object' },
+          metadata: { arena_grader: true, session_id: sessionId },
+        }),
+      });
 
       if (!result.ok) {
         throw new Error(`Grader LiteLLM ${result.status}`);
@@ -138,10 +132,7 @@ async function gradeSessionWithRetry(
     } catch (err) {
       if (attempt < GRADER_MAX_RETRIES - 1) {
         const delay = Math.pow(2, attempt + 1) * 1000;
-        logger.warn(
-          { attempt, delay, err },
-          'Arena grader retry',
-        );
+        logger.warn({ attempt, delay, err }, 'Arena grader retry');
         await new Promise((r) => setTimeout(r, delay));
       } else {
         throw err;
@@ -154,7 +145,14 @@ async function gradeSessionWithRetry(
 function mapGraderOutput(
   sessionId: string,
   responses: ArenaLog[],
-  parsed: { grades: Array<{ bot_id: string; scores: Record<string, number | null>; total: number; rationale: string }> },
+  parsed: {
+    grades: Array<{
+      bot_id: string;
+      scores: Record<string, number | null>;
+      total: number;
+      rationale: string;
+    }>;
+  },
 ): ArenaGrade[] {
   const grades: ArenaGrade[] = [];
 

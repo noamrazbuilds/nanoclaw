@@ -98,6 +98,7 @@ export async function callModel(
           completion_tokens: data.usage.completion_tokens,
         }
       : undefined,
-    requestId: data.id || response.headers.get('x-litellm-call-id') || undefined,
+    requestId:
+      data.id || response.headers.get('x-litellm-call-id') || undefined,
   };
 }

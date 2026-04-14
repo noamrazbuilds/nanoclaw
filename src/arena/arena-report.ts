@@ -62,12 +62,12 @@ export async function generateReport(options: {
     }
   }
 
-  const totalSessions = sorted.reduce(
-    (sum, m) => sum + m.total_sessions,
-    0,
-  );
+  const totalSessions = sorted.reduce((sum, m) => sum + m.total_sessions, 0);
   report += `\n_Total sessions: ${totalSessions}_`;
 
-  logger.info({ days: options.days, models: sorted.length }, 'Arena report generated');
+  logger.info(
+    { days: options.days, models: sorted.length },
+    'Arena report generated',
+  );
   return report;
 }

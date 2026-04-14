@@ -88,32 +88,34 @@ export function insertLog(log: {
   isBroadcast: boolean;
   error: string | null;
 }): number {
-  const result = db.prepare(
-    `INSERT INTO arena_logs (
+  const result = db
+    .prepare(
+      `INSERT INTO arena_logs (
        session_id, bot_id, model, chat_id, user_id, telegram_message_id,
        parent_log_id, prompt_text, history_json, response_text,
        tool_calls_json, tokens_in, tokens_out, litellm_request_id,
        latency_ms, is_broadcast, error
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    log.sessionId,
-    log.botId,
-    log.model,
-    log.chatId,
-    log.userId,
-    log.telegramMessageId,
-    log.parentLogId,
-    log.promptText,
-    log.historyJson,
-    log.responseText,
-    log.toolCallsJson,
-    log.tokensIn,
-    log.tokensOut,
-    log.litellmRequestId,
-    log.latencyMs,
-    log.isBroadcast ? 1 : 0,
-    log.error,
-  );
+    )
+    .run(
+      log.sessionId,
+      log.botId,
+      log.model,
+      log.chatId,
+      log.userId,
+      log.telegramMessageId,
+      log.parentLogId,
+      log.promptText,
+      log.historyJson,
+      log.responseText,
+      log.toolCallsJson,
+      log.tokensIn,
+      log.tokensOut,
+      log.litellmRequestId,
+      log.latencyMs,
+      log.isBroadcast ? 1 : 0,
+      log.error,
+    );
   return Number(result.lastInsertRowid);
 }
 
@@ -121,9 +123,10 @@ export function updateLogTelegramMessageId(
   logId: number,
   telegramMessageId: number,
 ): void {
-  db.prepare(
-    `UPDATE arena_logs SET telegram_message_id = ? WHERE id = ?`,
-  ).run(telegramMessageId, logId);
+  db.prepare(`UPDATE arena_logs SET telegram_message_id = ? WHERE id = ?`).run(
+    telegramMessageId,
+    logId,
+  );
 }
 
 export function updateRating(

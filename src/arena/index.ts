@@ -139,7 +139,10 @@ class ArenaOrchestrator {
           if (primaryBot?.config.id !== config.id) return;
 
           this.handleMessage(ctx.message).catch((err) =>
-            logger.error({ err, botId: config.id }, 'Arena message handler error'),
+            logger.error(
+              { err, botId: config.id },
+              'Arena message handler error',
+            ),
           );
         });
 
@@ -181,8 +184,7 @@ class ArenaOrchestrator {
     for (const [botId, { bot }] of this.bots) {
       bot.start({
         allowed_updates: ['message', 'message_reaction'],
-        onStart: () =>
-          logger.info({ botId }, 'Arena bot polling started'),
+        onStart: () => logger.info({ botId }, 'Arena bot polling started'),
       });
     }
 
@@ -295,10 +297,7 @@ class ArenaOrchestrator {
           results[i].status === 'rejected'
             ? (results[i] as PromiseRejectedResult).reason
             : null;
-        logger.error(
-          { botId, err: reason },
-          'Arena broadcast: bot failed',
-        );
+        logger.error({ botId, err: reason }, 'Arena broadcast: bot failed');
       }
     }
   }
@@ -405,14 +404,14 @@ class ArenaOrchestrator {
         .trim();
 
       if (!response.text) {
-        throw new Error(`${config.model} produced empty response after sanitization`);
+        throw new Error(
+          `${config.model} produced empty response after sanitization`,
+        );
       }
 
       // Stagger sends
       if (sendIndex > 0) {
-        await new Promise((r) =>
-          setTimeout(r, sendIndex * SEND_STAGGER_MS),
-        );
+        await new Promise((r) => setTimeout(r, sendIndex * SEND_STAGGER_MS));
       }
 
       // Send response — prefix with model name for broadcast
@@ -468,8 +467,7 @@ class ArenaOrchestrator {
         'Arena bot responded',
       );
     } catch (err) {
-      const errorMsg =
-        err instanceof Error ? err.message : String(err);
+      const errorMsg = err instanceof Error ? err.message : String(err);
 
       // Log the error
       arenaDb.insertLog({
@@ -574,11 +572,7 @@ class ArenaOrchestrator {
     }
   }
 
-  private shouldRun(
-    cronExpr: string,
-    lastRun: string,
-    now: Date,
-  ): boolean {
+  private shouldRun(cronExpr: string, lastRun: string, now: Date): boolean {
     try {
       const cron = CronExpressionParser.parse(cronExpr, { tz: TIMEZONE });
       const prev = cron.prev();
@@ -594,7 +588,10 @@ class ArenaOrchestrator {
   private async sendWeeklyReport(): Promise<void> {
     const report = await generateReport({ days: 7 });
     // TODO: Send via The Dude IPC
-    logger.info({ reportLength: report.length }, 'Arena weekly report generated');
+    logger.info(
+      { reportLength: report.length },
+      'Arena weekly report generated',
+    );
   }
 
   /** Generate an on-demand report (called via IPC from The Dude). */

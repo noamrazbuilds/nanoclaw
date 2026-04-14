@@ -14,6 +14,7 @@ const envConfig = readEnvFile([
   'ARENA_BOT_TOKEN_MINIMAX',
   'ARENA_BOT_TOKEN_QWEN',
   'ARENA_BOT_TOKEN_GEMMA',
+  'ARENA_BOT_TOKEN_SONNET',
 ]);
 
 export const ARENA_ENABLED =
@@ -37,7 +38,7 @@ export const LOCAL_MODEL_TIMEOUT_MS = 120_000;
 export const LOCAL_TOOL_TIMEOUT_MS = 10_000;
 
 /** Grading config */
-export const GRADER_MODEL = 'claude-sonnet-4-5';
+export const GRADER_MODEL = 'claude-opus-4-6';
 export const GRADER_VERSION = '1.0.0';
 export const GRADER_MAX_RETRIES = 3;
 
@@ -53,7 +54,9 @@ export const ARENA_SYSTEM_PROMPT = `You are a helpful AI assistant participating
 
 /** Build bot configs from env tokens. Missing tokens are skipped at startup. */
 export function buildBotConfigs(): ArenaBotConfig[] {
-  const defs: Array<Omit<ArenaBotConfig, 'token' | 'telegramUserId'> & { envKey: string }> = [
+  const defs: Array<
+    Omit<ArenaBotConfig, 'token' | 'telegramUserId'> & { envKey: string }
+  > = [
     {
       id: 'deepseek-v3',
       model: 'deepseek-v3.2',
@@ -93,6 +96,14 @@ export function buildBotConfigs(): ArenaBotConfig[] {
       displayName: 'Gemma 4B',
       local: true,
       envKey: 'ARENA_BOT_TOKEN_GEMMA',
+    },
+    {
+      id: 'claude-sonnet',
+      model: 'claude-sonnet-4-6',
+      username: 'nanoclaw_sonnet_bot',
+      displayName: 'Claude Sonnet 4.6',
+      local: false,
+      envKey: 'ARENA_BOT_TOKEN_SONNET',
     },
   ];
 

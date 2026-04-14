@@ -4,6 +4,10 @@ All notable changes to NanoClaw will be documented in this file.
 
 For detailed release notes, see the [full changelog on the documentation site](https://docs.nanoclaw.dev/changelog).
 
+## [1.2.41] - 2026-04-14
+
+- Fixed `network_mode: host` on LiteLLM breaking all agent containers — UFW blocked Docker bridge traffic to port 4000 (Docker port publishing bypasses UFW, host-mode binding does not). Added UFW rule allowing `docker0` interface to port 4000.
+
 ## [1.2.40] - 2026-04-13
 
 - Added Model Arena: a dedicated Telegram group where 5 AI models (DeepSeek V3.2, Kimi K2.5, MiniMax M2.5, Qwen Coder 3B, Gemma 4B) respond to the same prompt in parallel via independent Telegram bots. Supports broadcast (all bots), @mention (targeted), and reply-to (conversation continuation) routing.
