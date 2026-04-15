@@ -31,8 +31,8 @@ export const ARENA_LITELLM_KEY = LITELLM_API_KEY;
 /** Delay between bot responses to avoid Telegram rate limits. */
 export const SEND_STAGGER_MS = 200;
 
-/** Timeout for local model inference (ms). 120s for 1vCPU VM. */
-export const LOCAL_MODEL_TIMEOUT_MS = 120_000;
+/** Timeout for local model inference (ms). Locals are serialized on 1vCPU, so a long timeout is fine — only one runs at a time. */
+export const LOCAL_MODEL_TIMEOUT_MS = 600_000;
 
 /** Timeout for local model tool calls (ms). */
 export const LOCAL_TOOL_TIMEOUT_MS = 10_000;

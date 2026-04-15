@@ -12,6 +12,16 @@ import {
 import type { ArenaBotConfig, ChatMessage, LLMResponse } from './types.js';
 import { logger } from '../logger.js';
 
+// Serialize all local Ollama calls — on a 1vCPU host, two small models running
+// concurrently thrash the CPU and both time out. A single-slot queue lets each
+// finish before the next starts. Cloud calls bypass this entirely.
+let localQueue: Promise<unknown> = Promise.resolve();
+function runOnLocalQueue<T>(fn: () => Promise<T>): Promise<T> {
+  const next = localQueue.then(fn, fn);
+  localQueue = next.catch(() => undefined);
+  return next;
+}
+
 export async function callModel(
   botConfig: ArenaBotConfig,
   history: ChatMessage[],
@@ -42,19 +52,24 @@ export async function callModel(
   const url = `${ARENA_LITELLM_URL}/chat/completions`;
   const startTime = Date.now();
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(ARENA_LITELLM_KEY
-        ? { Authorization: `Bearer ${ARENA_LITELLM_KEY}` }
-        : {}),
-    },
-    body: JSON.stringify(payload),
-    signal: botConfig.local
-      ? AbortSignal.timeout(LOCAL_MODEL_TIMEOUT_MS)
-      : AbortSignal.timeout(120_000),
-  });
+  const doFetch = () =>
+    fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(ARENA_LITELLM_KEY
+          ? { Authorization: `Bearer ${ARENA_LITELLM_KEY}` }
+          : {}),
+      },
+      body: JSON.stringify(payload),
+      signal: botConfig.local
+        ? AbortSignal.timeout(LOCAL_MODEL_TIMEOUT_MS)
+        : AbortSignal.timeout(120_000),
+    });
+
+  const response = botConfig.local
+    ? await runOnLocalQueue(doFetch)
+    : await doFetch();
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
