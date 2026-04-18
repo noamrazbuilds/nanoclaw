@@ -21,6 +21,18 @@ model_list:
       model: anthropic/claude-haiku-4-5-20251001
       api_key: os.environ/ANTHROPIC_API_KEY
 
+  # Previous-generation Claude 4.5 models, kept registered so older
+  # grader/agent configs don't 400 during upgrades or rollbacks.
+  - model_name: claude-opus-4-5
+    litellm_params:
+      model: anthropic/claude-opus-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-sonnet-4-5
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
   # Aliases so NanoClaw's model directives (opus/sonnet/haiku) resolve.
   # Claude Code SDK expands short names (e.g. "haiku") to full Anthropic
   # model IDs (e.g. "claude-haiku-4-5-20251001") before sending to the API.

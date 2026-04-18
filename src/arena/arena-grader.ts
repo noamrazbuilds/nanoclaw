@@ -51,6 +51,39 @@ function buildGraderPrompt(responses: ArenaLog[]): string {
   return `User Prompt:\n${prompt}\n\nModel Responses:\n${responsesText}`;
 }
 
+/**
+ * Parse grader JSON output. `response_format: json_object` usually returns
+ * raw JSON, but some models still wrap it in ```json … ``` fences, which
+ * blows up JSON.parse. Strip the fence before parsing.
+ */
+export function parseGraderJson(content: string): unknown {
+  const trimmed = content.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+  return JSON.parse(fenced ? fenced[1] : trimmed);
+}
+
+/**
+ * 4xx client errors (except 408/429) are permanent — the request shape,
+ * model name, auth, or budget is wrong, and retrying won't help. Only
+ * retry on network errors, 5xx, 408 Request Timeout, and 429 Too Many Requests.
+ */
+export function isRetryableGraderError(err: unknown): boolean {
+  if (!(err instanceof GraderHttpError)) return true;
+  if (err.status >= 500) return true;
+  if (err.status === 408 || err.status === 429) return true;
+  return false;
+}
+
+export class GraderHttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly body: string,
+  ) {
+    super(`Grader LiteLLM ${status}: ${body.slice(0, 500)}`);
+    this.name = 'GraderHttpError';
+  }
+}
+
 export async function runDailyGrading(): Promise<void> {
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const sessions = arenaDb.getUngradedBroadcastSessionsSince(cutoff);
@@ -63,31 +96,37 @@ export async function runDailyGrading(): Promise<void> {
   logger.info({ count: sessions.length }, 'Arena grading: starting');
 
   for (const session of sessions) {
-    const responses = arenaDb.getLogsBySessionId(session.session_id);
-    if (responses.length < 2) continue;
+    await gradeOneSession(session.session_id);
+  }
+}
 
-    // Skip sessions where all responses are errors
-    const validResponses = responses.filter((r) => r.response_text);
-    if (validResponses.length === 0) {
-      arenaDb.updateSessionStatus(session.session_id, 'failed');
-      continue;
-    }
+/**
+ * Grade a single session by id. Updates status to 'graded' on success
+ * or 'failed' on permanent error. Safe to call on any session regardless
+ * of age — used by both the daily cron and one-shot requeue scripts.
+ */
+export async function gradeOneSession(sessionId: string): Promise<'graded' | 'failed'> {
+  const responses = arenaDb.getLogsBySessionId(sessionId);
+  const validResponses = responses.filter((r) => r.response_text);
 
-    try {
-      const grades = await gradeSessionWithRetry(session.session_id, responses);
-      arenaDb.insertGrades(grades);
-      arenaDb.updateSessionStatus(session.session_id, 'graded');
-      logger.info(
-        { sessionId: session.session_id, gradesCount: grades.length },
-        'Arena grading: session graded',
-      );
-    } catch (err) {
-      logger.error(
-        { sessionId: session.session_id, err },
-        'Arena grading: failed',
-      );
-      arenaDb.updateSessionStatus(session.session_id, 'failed');
-    }
+  if (validResponses.length === 0) {
+    arenaDb.updateSessionStatus(sessionId, 'failed');
+    return 'failed';
+  }
+
+  try {
+    const grades = await gradeSessionWithRetry(sessionId, validResponses);
+    arenaDb.insertGrades(grades);
+    arenaDb.updateSessionStatus(sessionId, 'graded');
+    logger.info(
+      { sessionId, gradesCount: grades.length },
+      'Arena grading: session graded',
+    );
+    return 'graded';
+  } catch (err) {
+    logger.error({ sessionId, err }, 'Arena grading: failed');
+    arenaDb.updateSessionStatus(sessionId, 'failed');
+    return 'failed';
   }
 }
 
@@ -118,7 +157,8 @@ async function gradeSessionWithRetry(
       });
 
       if (!result.ok) {
-        throw new Error(`Grader LiteLLM ${result.status}`);
+        const body = await result.text().catch(() => '');
+        throw new GraderHttpError(result.status, body);
       }
 
       const data = (await result.json()) as {
@@ -127,16 +167,18 @@ async function gradeSessionWithRetry(
       const content = data.choices?.[0]?.message?.content;
       if (!content) throw new Error('Empty grader response');
 
-      const parsed = JSON.parse(content);
+      const parsed = parseGraderJson(content) as Parameters<
+        typeof mapGraderOutput
+      >[2];
       return mapGraderOutput(sessionId, responses, parsed);
     } catch (err) {
-      if (attempt < GRADER_MAX_RETRIES - 1) {
-        const delay = Math.pow(2, attempt + 1) * 1000;
-        logger.warn({ attempt, delay, err }, 'Arena grader retry');
-        await new Promise((r) => setTimeout(r, delay));
-      } else {
+      const isLastAttempt = attempt >= GRADER_MAX_RETRIES - 1;
+      if (isLastAttempt || !isRetryableGraderError(err)) {
         throw err;
       }
+      const delay = Math.pow(2, attempt + 1) * 1000;
+      logger.warn({ attempt, delay, err }, 'Arena grader retry');
+      await new Promise((r) => setTimeout(r, delay));
     }
   }
   throw new Error('Unreachable');
