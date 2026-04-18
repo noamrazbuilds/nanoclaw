@@ -71,6 +71,19 @@ Email operations (gmail +send, +reply, +forward) MUST ALWAYS go through user con
 
 Read operations (list, get, search, read, triage) execute immediately without confirmation.
 
+## Argument Passing — No Shell Substitution
+
+`gws_run` does NOT evaluate a shell. The command string is passed as-is to the underlying API. This means shell features never expand:
+
+- `$(cat /path/to/file)` — delivered as the literal 7-byte text `$(cat ` followed by the path.
+- `` `cat ...` `` — backticks never expand.
+- `< file` redirection — the `<` character is treated as literal input.
+- `$VAR` / `${VAR}` — variables are not interpolated.
+
+For `gmail +send --body "..."`, always pass the full body inline as a literal string argument with embedded `\n` for newlines. If the body is already written to a file, Read the file first, then inline its contents into the `--body` argument.
+
+**Real incident — 2026-04-17T13:14Z:** A daily update was sent with `--body "$(cat /tmp/daily_update_apr17.txt)"`; the recipient received the literal string `$(cat /tmp/daily_update_apr17.txt)` instead of the email body. Do not repeat.
+
 ## Audit Log
 
 All tool calls are logged to `/workspace/group/logs/gws-audit.jsonl` with timestamps, commands, classification, and results.

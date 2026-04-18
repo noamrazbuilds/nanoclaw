@@ -539,21 +539,24 @@ export async function processTaskIpc(
           data.context_mode === 'group' || data.context_mode === 'isolated'
             ? data.context_mode
             : 'isolated';
-        createTask({
-          id: taskId,
-          group_folder: targetFolder,
-          chat_jid: targetJid,
-          prompt: data.prompt,
-          script: data.script || null,
-          schedule_type: scheduleType,
-          schedule_value: data.schedule_value,
-          context_mode: contextMode,
-          model: data.model || null,
-          suppress_chat_output: 0,
-          next_run: nextRun,
-          status: 'active',
-          created_at: new Date().toISOString(),
-        }, `ipc:${sourceGroup}`);
+        createTask(
+          {
+            id: taskId,
+            group_folder: targetFolder,
+            chat_jid: targetJid,
+            prompt: data.prompt,
+            script: data.script || null,
+            schedule_type: scheduleType,
+            schedule_value: data.schedule_value,
+            context_mode: contextMode,
+            model: data.model || null,
+            suppress_chat_output: 0,
+            next_run: nextRun,
+            status: 'active',
+            created_at: new Date().toISOString(),
+          },
+          `ipc:${sourceGroup}`,
+        );
         logger.info(
           { taskId, sourceGroup, targetFolder, contextMode },
           'Task created via IPC',

@@ -56,13 +56,15 @@ EOF
 Always surface the tags. Format using WhatsApp style (single `*asterisks*`):
 
 **High confidence (≥ 0.7):**
-> Saved. Auto-tagged: *work/legal, tech/nanoclaw*. Look right?
+> Saved. Auto-tagged: *work/legal, tech/nanoclaw*. Look right? 🎳
 
 **Low confidence or no taxonomy match:**
-> Saved. Best guess: *work/legal* (not sure). Reply `ok`, `tag as X/Y`, or `new tag category/name`.
+> Saved. Best guess: *work/legal* (not sure). Reply `ok`, `tag as X/Y`, or `new tag category/name`. 🎳
 
 **No tags at all (empty taxonomy):**
-> Saved (untagged — taxonomy is empty). Reply `new tag category/name` to start building it.
+> Saved (untagged — taxonomy is empty). Reply `new tag category/name` to start building it. 🎳
+
+Note: the bowling emoji sign-off from `preferences.md` applies to ALL outbound messages, including these capture confirmation templates.
 
 ### Step 5: Handle tag replies
 
