@@ -287,36 +287,44 @@ export function getAggregatesSince(sinceIso: string): ArenaAggregate[] {
     .all(sinceIso) as ArenaAggregate[];
 }
 
-/** Get graded data for aggregate computation. */
-export function getGradedDataForPeriod(
-  periodStart: string,
-  periodEnd: string,
-): Array<{
+/** Graded log with session id and sub-scores — source of truth for aggregates and quality reports. */
+export interface GradedLogRow {
+  session_id: string;
   bot_id: string;
   model: string;
   score_total: number;
+  score_correctness: number | null;
+  score_completeness: number | null;
+  score_code_quality: number | null;
+  score_clarity: number | null;
+  score_tool_efficiency: number | null;
   cost_usd: number | null;
   latency_ms: number;
   user_rating: number;
   user_replied: number;
   tool_calls_json: string | null;
-}> {
+  log_timestamp: string;
+}
+
+/**
+ * Graded logs in a [start, end) window, keyed by log timestamp.
+ * Replaces getGradedDataForPeriod — adds session_id (for win-rate) and sub-scores.
+ */
+export function getGradedLogsInRange(
+  startIso: string,
+  endIso: string,
+): GradedLogRow[] {
   return db
     .prepare(
-      `SELECT l.bot_id, l.model, g.score_total, l.cost_usd, l.latency_ms,
-              l.user_rating, l.user_replied, l.tool_calls_json
+      `SELECT l.session_id, l.bot_id, l.model,
+              g.score_total, g.score_correctness, g.score_completeness,
+              g.score_code_quality, g.score_clarity, g.score_tool_efficiency,
+              l.cost_usd, l.latency_ms, l.user_rating, l.user_replied,
+              l.tool_calls_json, l.timestamp AS log_timestamp
        FROM arena_grades g
        JOIN arena_logs l ON g.arena_log_id = l.id
-       WHERE g.graded_at >= ? AND g.graded_at < ?`,
+       WHERE l.is_broadcast = 1
+         AND l.timestamp >= ? AND l.timestamp < ?`,
     )
-    .all(periodStart, periodEnd) as Array<{
-    bot_id: string;
-    model: string;
-    score_total: number;
-    cost_usd: number | null;
-    latency_ms: number;
-    user_rating: number;
-    user_replied: number;
-    tool_calls_json: string | null;
-  }>;
+    .all(startIso, endIso) as GradedLogRow[];
 }

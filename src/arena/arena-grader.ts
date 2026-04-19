@@ -11,6 +11,7 @@ import {
   GRADER_MAX_RETRIES,
 } from './arena-config.js';
 import * as arenaDb from './arena-db.js';
+import { runDailyAggregation } from './arena-aggregator.js';
 import type { ArenaGrade, ArenaLog } from './types.js';
 import { logger } from '../logger.js';
 
@@ -98,6 +99,8 @@ export async function runDailyGrading(): Promise<void> {
   for (const session of sessions) {
     await gradeOneSession(session.session_id);
   }
+
+  runDailyAggregation();
 }
 
 /**
