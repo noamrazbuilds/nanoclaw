@@ -43,7 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && ln -sf /usr/lib/x86_64-linux-gnu/espeak-ng-data /usr/share/espeak-ng-data
 
 # Install Python packages for container skills
-RUN pip3 install --no-cache-dir --break-system-packages trafilatura
+RUN pip3 install --no-cache-dir --break-system-packages trafilatura pyyaml
 
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium-browser
