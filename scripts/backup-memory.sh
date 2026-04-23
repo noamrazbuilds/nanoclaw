@@ -83,30 +83,66 @@ except Exception:
   echo "$FALLBACK_TOKEN"
 }
 
-# Test that the resolved token actually works against the proxy
+# Test that the resolved token actually works against the proxy.
+# Returns one of:
+#   OK                — request succeeded
+#   AUTH:<etype>      — authentication/permission failure (token action needed)
+#   TRANSIENT:<etype> — overload, 5xx, timeout, parse error
+# Retries once on TRANSIENT to absorb short proxy or upstream API blips.
 test_proxy_connection() {
   local token="$1"
   local proxy="http://x:${token}@localhost:10255"
+  local body_file status http_code curl_exit
 
-  local result
-  result=$(curl -s --max-time 5 --proxy "$proxy" --cacert "$ONECLI_CA" \
-    -X POST "https://api.anthropic.com/v1/messages" \
-    -H "Content-Type: application/json" \
-    -H "x-api-key: placeholder" \
-    -H "anthropic-version: 2023-06-01" \
-    -d '{"model":"claude-haiku-4-5-20251001","max_tokens":5,"messages":[{"role":"user","content":"ok"}]}' 2>/dev/null)
+  body_file=$(mktemp)
 
-  echo "$result" | python3 -c "
-import sys, json
+  for attempt in 1 2; do
+    http_code=$(curl -s --max-time 10 --proxy "$proxy" --cacert "$ONECLI_CA" \
+      -o "$body_file" -w "%{http_code}" \
+      -X POST "https://api.anthropic.com/v1/messages" \
+      -H "Content-Type: application/json" \
+      -H "x-api-key: placeholder" \
+      -H "anthropic-version: 2023-06-01" \
+      -d '{"model":"claude-haiku-4-5-20251001","max_tokens":5,"messages":[{"role":"user","content":"ok"}]}' 2>/dev/null)
+    curl_exit=$?
+
+    if [ "$curl_exit" -eq 56 ]; then
+      # OneCLI proxy rejected the CONNECT tunnel (HTTP 407) — bad token.
+      status="AUTH:proxy_407"
+    elif [ "$curl_exit" -ne 0 ] || [ "$http_code" = "000" ]; then
+      # Timeout, connection refused, TLS failure — transient.
+      status="TRANSIENT:curl_${curl_exit}"
+    else
+      status=$(BODY_FILE="$body_file" python3 -c "
+import os, json
 try:
-    data = json.load(sys.stdin)
+    with open(os.environ['BODY_FILE']) as f:
+        data = json.load(f)
     if data.get('type') == 'message':
         print('OK')
     else:
-        print(data.get('error',{}).get('type','UNKNOWN_ERROR'))
+        etype = data.get('error', {}).get('type', 'UNKNOWN_ERROR')
+        if etype in ('authentication_error', 'permission_error'):
+            print(f'AUTH:{etype}')
+        else:
+            print(f'TRANSIENT:{etype}')
 except Exception:
-    print('PARSE_ERROR')
-" 2>/dev/null
+    print('TRANSIENT:PARSE_ERROR')
+" 2>/dev/null)
+    fi
+
+    # AUTH won't self-heal; OK means done. Only retry TRANSIENT.
+    if [ "$status" = "OK" ] || [[ "$status" == AUTH:* ]]; then
+      rm -f "$body_file"
+      echo "$status"
+      return
+    fi
+
+    [ "$attempt" = 1 ] && sleep 5
+  done
+
+  rm -f "$body_file"
+  echo "$status"
 }
 
 # Find the most recent backup snapshot
@@ -262,13 +298,19 @@ fi
 ONECLI_TOKEN=$(resolve_onecli_token)
 ONECLI_PROXY="http://x:${ONECLI_TOKEN}@localhost:10255"
 
-# Verify the token works
+# Verify the token works. Only auth failures are actionable and worth paging
+# about; transient errors fall through to heuristics silently so one-off proxy
+# blips don't wake anyone up.
 PROXY_STATUS=$(test_proxy_connection "$ONECLI_TOKEN")
-if [ "$PROXY_STATUS" != "OK" ]; then
-  log "Primary token failed ($PROXY_STATUS), trying fallback"
 
-  # If dynamic token failed, try the hardcoded fallback directly
-  if [ "$ONECLI_TOKEN" != "$FALLBACK_TOKEN" ]; then
+if [ "$PROXY_STATUS" = "OK" ]; then
+  AI_AVAILABLE=true
+else
+  log "Proxy test failed: $PROXY_STATUS"
+
+  # Switching tokens only helps for auth errors.
+  if [[ "$PROXY_STATUS" == AUTH:* ]] && [ "$ONECLI_TOKEN" != "$FALLBACK_TOKEN" ]; then
+    log "Auth error with dynamic token — trying hardcoded fallback"
     PROXY_STATUS=$(test_proxy_connection "$FALLBACK_TOKEN")
     if [ "$PROXY_STATUS" = "OK" ]; then
       log "Fallback token works"
@@ -277,12 +319,13 @@ if [ "$PROXY_STATUS" != "OK" ]; then
     fi
   fi
 
-  # If nothing works, notify and mark AI check as unavailable
-  if [ "$PROXY_STATUS" != "OK" ]; then
-    log "All OneCLI tokens failed — AI check unavailable"
-    send_telegram "⚠️ *Memory Backup — API Access Issue*
+  if [ "$PROXY_STATUS" = "OK" ]; then
+    AI_AVAILABLE=true
+  elif [[ "$PROXY_STATUS" == AUTH:* ]]; then
+    log "Auth error persists after fallback — alerting"
+    send_telegram "⚠️ *Memory Backup — Auth Failure*
 
-The backup script cannot reach the Anthropic API through the OneCLI proxy. The AI integrity check will fall back to heuristics only.
+The backup script cannot authenticate to the OneCLI proxy. The AI integrity check will fall back to heuristics only.
 
 *Error:* \`$PROXY_STATUS\`
 
@@ -292,10 +335,9 @@ The memory backup script at scripts/backup-memory.sh can't authenticate to the O
 \`\`\`"
     AI_AVAILABLE=false
   else
-    AI_AVAILABLE=true
+    log "Transient proxy error — skipping AI check, not alerting"
+    AI_AVAILABLE=false
   fi
-else
-  AI_AVAILABLE=true
 fi
 
 LAST_BACKUP=$(get_last_backup)
