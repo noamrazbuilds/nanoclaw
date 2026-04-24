@@ -154,7 +154,12 @@ litellm_settings:
   drop_params: true      # Strips unsupported params (cache_control, output_config, etc.)
   num_retries: 2         # Retry each model before triggering fallback
   request_timeout: 300   # 5 min for long agent queries
-  fallbacks:             # If primary fails after retries → fall back to claude-sonnet-4-6
+  fallbacks:
+    # Claude overloaded → cross-provider fallbacks
+    - claude-sonnet-4-6: [gemini-2.5-flash, deepseek-v3.2, gpt-4o]
+    - claude-opus-4-6: [gemini-2.5-pro, gpt-4o]
+    - claude-haiku-4-5: [gemini-flash-lite, gpt-4o-mini]
+    # Arena bots: if non-Claude primary fails → fall back to sonnet
     - deepseek-v3.2: [claude-sonnet-4-6]
     - minimax-m2.5: [claude-sonnet-4-6]
     - kimi-k2.5: [claude-sonnet-4-6]
