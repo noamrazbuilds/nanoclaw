@@ -21,7 +21,9 @@ function toolCallSuccessRate(rows: GradedLogRow[]): number | null {
   for (const r of rows) {
     if (!r.tool_calls_json) continue;
     try {
-      const calls = JSON.parse(r.tool_calls_json) as Array<{ success?: boolean }>;
+      const calls = JSON.parse(r.tool_calls_json) as Array<{
+        success?: boolean;
+      }>;
       for (const c of calls) {
         total++;
         if (c.success) successes++;
@@ -74,10 +76,7 @@ export function buildDailyAggregates(
       );
     }
     for (const w of winners) {
-      winShareByModel.set(
-        w.model,
-        (winShareByModel.get(w.model) ?? 0) + share,
-      );
+      winShareByModel.set(w.model, (winShareByModel.get(w.model) ?? 0) + share);
     }
   }
 

@@ -108,7 +108,9 @@ export async function runDailyGrading(): Promise<void> {
  * or 'failed' on permanent error. Safe to call on any session regardless
  * of age — used by both the daily cron and one-shot requeue scripts.
  */
-export async function gradeOneSession(sessionId: string): Promise<'graded' | 'failed'> {
+export async function gradeOneSession(
+  sessionId: string,
+): Promise<'graded' | 'failed'> {
   const responses = arenaDb.getLogsBySessionId(sessionId);
   const validResponses = responses.filter((r) => r.response_text);
 

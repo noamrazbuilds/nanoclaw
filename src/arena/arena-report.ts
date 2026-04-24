@@ -124,7 +124,8 @@ export async function generateReport(options: {
       r.winShareNumerator += a.win_rate * a.total_sessions;
       r.winShareDenominator += a.total_sessions;
     }
-    if (a.user_reply_rate != null) r.replyRateNumerator += a.user_reply_rate * n;
+    if (a.user_reply_rate != null)
+      r.replyRateNumerator += a.user_reply_rate * n;
     if (a.user_rating_ratio != null) {
       r.ratingSum += a.user_rating_ratio * n;
       r.ratingResponses += n;
@@ -202,7 +203,8 @@ export async function generateReport(options: {
         line += ` | ${rating > 0 ? '+' : ''}${rating.toFixed(0)}% rating`;
       }
       if (m.toolSuccessResponses > 0) {
-        const toolRate = (m.toolSuccessNumerator / m.toolSuccessResponses) * 100;
+        const toolRate =
+          (m.toolSuccessNumerator / m.toolSuccessResponses) * 100;
         line += ` | ${toolRate.toFixed(0)}% tool success`;
       }
       report += `${line}\n`;
