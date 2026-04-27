@@ -710,7 +710,7 @@ async function runAgent(
   imageAttachments: Array<{ relativePath: string; mediaType: string }>,
   directives: ModelDirectives = { delegateModels: false },
   onOutput?: (output: ContainerOutput) => Promise<void>,
-  overflowOpts?: { isOverflow: boolean },
+  overflowOpts?: { isOverflow: boolean; slotId?: string },
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
   const isOverflow = overflowOpts?.isOverflow === true;
@@ -765,7 +765,7 @@ async function runAgent(
           output.result &&
           typeof output.result === 'string' &&
           isCreditError(output.result) &&
-          directives.model !== 'gpt-4o'
+          !isOverflow
         ) {
           creditErrorInResult = true;
           try {
@@ -816,6 +816,7 @@ async function runAgent(
           systemHint:
             'The user sent this while you were handling another request. Respond to this message specifically.',
         }),
+        ...(overflowOpts?.slotId && { slotId: overflowOpts.slotId }),
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
@@ -833,7 +834,7 @@ async function runAgent(
     const creditErrorText = `${output.error || ''} ${streamedError || ''}`;
     if (
       (isCreditError(creditErrorText) || creditErrorInResult) &&
-      directives.model !== 'gpt-4o'
+      !isOverflow
     ) {
       logger.warn(
         { group: group.name },
@@ -843,7 +844,7 @@ async function runAgent(
       if (ch) {
         ch.sendMessage(
           chatJid,
-          `Hey man, Anthropic credit balance ran dry. No worries — I'm re-running that on GPT-4o. Should be right back.`,
+          `Hey man, Anthropic credit balance ran dry. No worries — I'm re-running that on DeepSeek. Should be right back.`,
         ).catch(() => {});
       }
       return runAgent(
@@ -851,11 +852,11 @@ async function runAgent(
         prompt,
         chatJid,
         imageAttachments,
-        // gpt-4o: no Claude session format issues, no reasoning_content conflicts.
-        // delegateModels cleared to avoid SDK-level fallback back to an Anthropic model.
-        { model: 'gpt-4o', delegateModels: false },
+        { model: 'deepseek-v3.2', delegateModels: false },
         onOutput,
-        { isOverflow: true },
+        // Fresh slot so DeepSeek gets an empty .claude/ dir with no Claude
+        // session files that contain thinking content it can't parse.
+        { isOverflow: true, slotId: 'credit-retry' },
       );
     }
 
