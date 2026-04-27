@@ -104,6 +104,7 @@ model_list:
     litellm_params:
       model: deepseek/deepseek-chat   # LiteLLM's name for latest DeepSeek V3 series
       api_key: os.environ/DEEPSEEK_API_KEY
+      api_base: https://api.deepseek.com/v1  # avoid /beta endpoint which requires reasoning_content passback
 
   # ── MiniMax ─────────────────────────────────────────────────
   - model_name: minimax-m2.5
