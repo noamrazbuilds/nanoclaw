@@ -268,6 +268,23 @@ export function isAuthError(stderr: string): boolean {
 }
 
 /**
+ * Detect credit balance errors from the Anthropic API.
+ * Returns true if the error indicates insufficient API credits.
+ */
+export function isCreditError(stderr: string): boolean {
+  const creditPatterns = [
+    /credit.*balance.*too.*low/i,
+    /credit_balance_too_low/i,
+    /insufficient.*credits/i,
+    /402.*payment.*required/i,
+    /payment.*required/i,
+    /billing.*limit/i,
+    /out.*of.*credits/i,
+  ];
+  return creditPatterns.some((p) => p.test(stderr));
+}
+
+/**
  * Start the OAuth token refresh monitor.
  * Call this during NanoClaw startup.
  */

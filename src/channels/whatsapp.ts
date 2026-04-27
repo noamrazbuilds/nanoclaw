@@ -515,6 +515,18 @@ export class WhatsAppChannel implements Channel {
     logger.info({ jid, filePath, filename: displayName }, 'Document sent');
   }
 
+  async sendImage(jid: string, imagePath: string, caption?: string): Promise<void> {
+    const buffer = fs.readFileSync(imagePath);
+    const ext = path.extname(imagePath).toLowerCase();
+    const mimetype = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
+    await this.sock.sendMessage(jid, {
+      image: buffer,
+      mimetype,
+      ...(caption ? { caption } : {}),
+    });
+    logger.info({ jid, imagePath }, 'Image sent');
+  }
+
   async sendReaction(
     chatJid: string,
     messageKey: {

@@ -106,6 +106,8 @@ export interface Channel {
     caption?: string,
     filename?: string,
   ): Promise<void>;
+  // Optional: send an image file.
+  sendImage?(jid: string, imagePath: string, caption?: string): Promise<void>;
   // Optional: reaction support
   sendReaction?(
     chatJid: string,

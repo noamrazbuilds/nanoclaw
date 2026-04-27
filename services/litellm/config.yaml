@@ -53,6 +53,11 @@ model_list:
       api_key: os.environ/ANTHROPIC_API_KEY
 
   # ── OpenAI ──────────────────────────────────────────────────
+  - model_name: gpt-image-2
+    litellm_params:
+      model: openai/gpt-image-2
+      api_key: os.environ/OPENAI_API_KEY
+
   - model_name: gpt-4o
     litellm_params:
       model: openai/gpt-4o

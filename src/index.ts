@@ -83,6 +83,7 @@ import { StatusTracker } from './status-tracker.js';
 import { logger } from './logger.js';
 import {
   isAuthError,
+  isCreditError,
   startOAuthRefreshMonitor,
   stopOAuthRefreshMonitor,
 } from './oauth-refresh.js';
@@ -743,11 +744,18 @@ async function runAgent(
 
   // Wrap onOutput to track session ID from streamed results
   // Overflow containers have throwaway sessions — don't save them
+  let streamedError: string | undefined;
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
         if (!isOverflow && output.newSessionId) {
           sessions[group.folder] = output.newSessionId;
           setSession(group.folder, output.newSessionId, computeSkillsHash());
+        }
+        // Capture error text from streaming output for credit error detection.
+        // In streaming mode, runContainerAgent always returns status:'success',
+        // so the agent-runner's error message only arrives here via onOutput.
+        if (output.status === 'error' && output.error) {
+          streamedError = output.error;
         }
         await onOutput(output);
       }
@@ -812,6 +820,31 @@ async function runAgent(
           ).catch(() => {});
         }
       }
+
+      // Detect credit balance errors — notify the user then retry with DeepSeek.
+      // Check both output.error (from stderr) and streamedError (from stdout JSON)
+      // because in streaming mode the agent-runner error lands in the stream, not stderr.
+      const creditErrorText = `${output.error || ''} ${streamedError || ''}`;
+      if (isCreditError(creditErrorText) && directives.model !== 'deepseek-v3.2') {
+        logger.warn({ group: group.name }, 'Credit balance too low, retrying with DeepSeek');
+        const ch = findChannel(channels, chatJid);
+        if (ch) {
+          ch.sendMessage(
+            chatJid,
+            `Hey man, Anthropic credit balance ran dry. No worries — I'm re-running that on DeepSeek. Should be right back.`,
+          ).catch(() => {});
+        }
+        return runAgent(
+          group,
+          prompt,
+          chatJid,
+          imageAttachments,
+          { ...directives, model: 'deepseek-v3.2' },
+          onOutput,
+          { isOverflow: true },
+        );
+      }
+
       return 'error';
     }
 
@@ -1276,6 +1309,12 @@ async function main(): Promise<void> {
       routeAudio(channels, jid, audioPath, caption),
     sendDocument: (jid, filePath, caption, filename) =>
       routeDocument(channels, jid, filePath, caption, filename),
+    sendImage: async (jid, imagePath, caption) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      if (!channel.sendImage) throw new Error(`Channel ${channel.name} does not support sendImage`);
+      return channel.sendImage(jid, imagePath, caption);
+    },
     sendReaction: async (jid, emoji, messageId) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);

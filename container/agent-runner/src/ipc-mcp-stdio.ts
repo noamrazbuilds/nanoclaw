@@ -464,6 +464,81 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
+server.tool(
+  'generate_image',
+  `Generate an image using gpt-image-2 and send it to the chat.
+
+Use this when the user asks you to generate, create, draw, or make an image/picture/photo.
+The image is sent directly to the chat — you don't need to call send_message separately.
+
+Tips:
+- Be descriptive and specific in the prompt for best results
+- gpt-image-2 supports high-fidelity photorealistic images, illustrations, and art styles
+- Default size is 1024x1024; use 1792x1024 for landscape, 1024x1792 for portrait`,
+  {
+    prompt: z.string().describe('Detailed description of the image to generate'),
+    caption: z.string().optional().describe('Optional caption to send with the image'),
+    size: z
+      .enum(['1024x1024', '1792x1024', '1024x1792'])
+      .optional()
+      .default('1024x1024')
+      .describe('Image dimensions'),
+  },
+  async (args) => {
+    const litellmHost = process.env.LITELLM_HOST || 'http://host.docker.internal:4000';
+    const litellmKey = process.env.LITELLM_API_KEY || 'sk-1234';
+
+    const response = await fetch(`${litellmHost}/v1/images/generations`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${litellmKey}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-image-2',
+        prompt: args.prompt,
+        n: 1,
+        size: args.size || '1024x1024',
+        response_format: 'b64_json',
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      return {
+        content: [{ type: 'text' as const, text: `Image generation failed: ${err}` }],
+        isError: true,
+      };
+    }
+
+    const json = (await response.json()) as { data: Array<{ b64_json?: string; url?: string }> };
+    const item = json.data?.[0];
+    if (!item?.b64_json) {
+      return {
+        content: [{ type: 'text' as const, text: 'Image generation returned no data.' }],
+        isError: true,
+      };
+    }
+
+    const filename = `generated-${Date.now()}.png`;
+    const outputPath = `/workspace/group/${filename}`;
+    fs.writeFileSync(outputPath, Buffer.from(item.b64_json, 'base64'));
+
+    writeIpcFile(MESSAGES_DIR, {
+      type: 'image',
+      chatJid,
+      filePath: outputPath,
+      caption: args.caption || undefined,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+
+    return {
+      content: [{ type: 'text' as const, text: `Image generated and sent (${filename}).` }],
+    };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

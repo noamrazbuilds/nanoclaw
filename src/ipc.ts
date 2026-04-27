@@ -30,6 +30,7 @@ export interface IpcDeps {
     caption?: string,
     filename?: string,
   ) => Promise<void>;
+  sendImage?: (jid: string, imagePath: string, caption?: string) => Promise<void>;
   sendReaction?: (
     jid: string,
     emoji: string,
@@ -265,6 +266,48 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     logger.warn(
                       { chatJid: data.chatJid, sourceGroup },
                       'Unauthorized IPC document attempt blocked',
+                    );
+                  }
+                }
+              } else if (data.type === 'image' && data.chatJid && data.filePath) {
+                let imagePath: string = data.filePath;
+                if (imagePath.startsWith('/workspace/group/')) {
+                  imagePath = imagePath.replace(
+                    '/workspace/group/',
+                    `groups/${sourceGroup}/`,
+                  );
+                }
+                if (!fs.existsSync(imagePath)) {
+                  logger.error(
+                    { imagePath, sourceGroup, originalPath: data.filePath },
+                    'IPC image file not found',
+                  );
+                } else {
+                  const targetGroup = registeredGroups[data.chatJid];
+                  if (isMain || (targetGroup && targetGroup.folder === sourceGroup)) {
+                    if (deps.sendImage) {
+                      try {
+                        await deps.sendImage(data.chatJid, imagePath, data.caption);
+                        logger.info(
+                          { chatJid: data.chatJid, sourceGroup, imagePath },
+                          'IPC image sent',
+                        );
+                      } catch (imgErr) {
+                        logger.error(
+                          { chatJid: data.chatJid, sourceGroup, imagePath, err: imgErr },
+                          'IPC image send failed',
+                        );
+                      }
+                    } else {
+                      logger.warn(
+                        { chatJid: data.chatJid },
+                        'Image IPC received but no sendImage handler',
+                      );
+                    }
+                  } else {
+                    logger.warn(
+                      { chatJid: data.chatJid, sourceGroup },
+                      'Unauthorized IPC image attempt blocked',
                     );
                   }
                 }
