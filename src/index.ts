@@ -844,7 +844,7 @@ async function runAgent(
       if (ch) {
         ch.sendMessage(
           chatJid,
-          `Hey man, Anthropic credit balance ran dry. No worries — I'm re-running that on Gemini. Should be right back.`,
+          `Hey man, Anthropic credit balance ran dry. No worries — I'm re-running that on GPT-4o mini. Should be right back.`,
         ).catch(() => {});
       }
       return runAgent(
@@ -852,7 +852,7 @@ async function runAgent(
         prompt,
         chatJid,
         imageAttachments,
-        { model: 'gemini-2.5-flash', delegateModels: false },
+        { model: 'gpt-4o-mini', delegateModels: false },
         onOutput,
         { isOverflow: true, slotId: 'credit-retry' },
       );
