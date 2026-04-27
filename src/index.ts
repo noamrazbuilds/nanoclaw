@@ -844,7 +844,7 @@ async function runAgent(
       if (ch) {
         ch.sendMessage(
           chatJid,
-          `Hey man, Anthropic credit balance ran dry. No worries — I'm re-running that on DeepSeek. Should be right back.`,
+          `Hey man, Anthropic credit balance ran dry. No worries — I'm re-running that on GPT-4o mini. Should be right back.`,
         ).catch(() => {});
       }
       return runAgent(
@@ -852,10 +852,8 @@ async function runAgent(
         prompt,
         chatJid,
         imageAttachments,
-        { model: 'deepseek-v3.2', delegateModels: false },
+        { model: 'gpt-4o-mini', delegateModels: false },
         onOutput,
-        // Fresh slot so DeepSeek gets an empty .claude/ dir with no Claude
-        // session files that contain thinking content it can't parse.
         { isOverflow: true, slotId: 'credit-retry' },
       );
     }
