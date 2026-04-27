@@ -55,7 +55,10 @@ import {
   storeMessage,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
-import { resolveGroupFolderPath } from './group-folder.js';
+import {
+  resolveGroupFolderPath,
+  resolveGroupIpcPath,
+} from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import {
   findChannel,
@@ -758,7 +761,9 @@ async function runAgent(
         }
         // Detect credit errors in the result text (exit-code-0 path: SDK returns
         // the API error as a successful text result rather than throwing).
-        // Swallow the message so the user only sees the retry notification.
+        // Swallow the message so the user only sees the retry notification,
+        // and write the IPC close sentinel so the container exits promptly
+        // instead of sitting idle waiting for the next message.
         if (
           output.result &&
           typeof output.result === 'string' &&
@@ -766,6 +771,16 @@ async function runAgent(
           directives.model !== 'deepseek-v3.2'
         ) {
           creditErrorInResult = true;
+          try {
+            const ipcInputDir = path.join(
+              resolveGroupIpcPath(group.folder),
+              'input',
+            );
+            fs.mkdirSync(ipcInputDir, { recursive: true });
+            fs.writeFileSync(path.join(ipcInputDir, '_close'), '');
+          } catch {
+            // best-effort; container will exit via idle timeout if this fails
+          }
           return;
         }
         await onOutput(output);
