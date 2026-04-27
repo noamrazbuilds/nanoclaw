@@ -164,11 +164,12 @@ litellm_settings:
     - claude-sonnet-4-6: [gemini-2.5-flash, deepseek-v3.2, gpt-4o]
     - claude-opus-4-6: [gemini-2.5-pro, gpt-4o]
     - claude-haiku-4-5: [gemini-flash-lite, gpt-4o-mini]
-    # Arena bots: if non-Claude primary fails → fall back to sonnet
-    - deepseek-v3.2: [claude-sonnet-4-6]
-    - minimax-m2.5: [claude-sonnet-4-6]
-    - kimi-k2.5: [claude-sonnet-4-6]
-    - gemini-flash-lite: [claude-sonnet-4-6]
+    # Arena bots: if non-Claude primary fails → fall back to gemini (not Anthropic,
+    # since Anthropic credits may be depleted and would cascade the same error)
+    - deepseek-v3.2: [gemini-2.5-flash]
+    - minimax-m2.5: [gemini-2.5-flash]
+    - kimi-k2.5: [gemini-2.5-flash]
+    - gemini-flash-lite: [gemini-2.5-flash]
   allowed_fails: 3       # Cooldown model after 3 failures/min
   cooldown_time: 60      # Cooldown duration in seconds
 
