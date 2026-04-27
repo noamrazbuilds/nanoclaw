@@ -55,10 +55,7 @@ import {
   storeMessage,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
-import {
-  resolveGroupFolderPath,
-  resolveGroupIpcPath,
-} from './group-folder.js';
+import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import {
   findChannel,
@@ -768,7 +765,7 @@ async function runAgent(
           output.result &&
           typeof output.result === 'string' &&
           isCreditError(output.result) &&
-          directives.model !== 'deepseek-v3.2'
+          directives.model !== 'gpt-4o'
         ) {
           creditErrorInResult = true;
           try {
@@ -791,8 +788,12 @@ async function runAgent(
     // Resolve model: message directive > per-group config > global default
     const resolvedModel =
       directives.model || group.containerConfig?.model || DEFAULT_MODEL;
+    // Suppress fallback model for non-Anthropic runs so the SDK can't
+    // bounce back to a Claude model (e.g. during credit error retries).
     const resolvedFallback =
-      group.containerConfig?.fallbackModel || DEFAULT_FALLBACK_MODEL;
+      directives.model && directives.model !== DEFAULT_MODEL
+        ? undefined
+        : group.containerConfig?.fallbackModel || DEFAULT_FALLBACK_MODEL;
     const allowDelegation =
       directives.delegateModels ||
       group.containerConfig?.allowModelDelegation === true;
@@ -832,7 +833,7 @@ async function runAgent(
     const creditErrorText = `${output.error || ''} ${streamedError || ''}`;
     if (
       (isCreditError(creditErrorText) || creditErrorInResult) &&
-      directives.model !== 'deepseek-v3.2'
+      directives.model !== 'gpt-4o'
     ) {
       logger.warn(
         { group: group.name },
@@ -842,7 +843,7 @@ async function runAgent(
       if (ch) {
         ch.sendMessage(
           chatJid,
-          `Hey man, Anthropic credit balance ran dry. No worries — I'm re-running that on DeepSeek. Should be right back.`,
+          `Hey man, Anthropic credit balance ran dry. No worries — I'm re-running that on GPT-4o. Should be right back.`,
         ).catch(() => {});
       }
       return runAgent(
@@ -850,7 +851,9 @@ async function runAgent(
         prompt,
         chatJid,
         imageAttachments,
-        { ...directives, model: 'deepseek-v3.2' },
+        // gpt-4o: no Claude session format issues, no reasoning_content conflicts.
+        // delegateModels cleared to avoid SDK-level fallback back to an Anthropic model.
+        { model: 'gpt-4o', delegateModels: false },
         onOutput,
         { isOverflow: true },
       );
