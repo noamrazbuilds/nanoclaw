@@ -5,6 +5,7 @@ import type { WAMessage } from '@whiskeysockets/baileys';
 
 const MAX_DIMENSION = 1024;
 const IMAGE_REF_PATTERN = /\[Image: (attachments\/[^\]]+)\]/g;
+const STICKER_REF_PATTERN = /\[Sticker: (attachments\/[^\]]+)\]/g;
 
 export interface ProcessedImage {
   content: string;
@@ -50,6 +51,28 @@ export async function processImage(
   return { content, relativePath };
 }
 
+export function isStickerMessage(msg: WAMessage): boolean {
+  return !!msg.message?.stickerMessage;
+}
+
+export async function processSticker(
+  buffer: Buffer,
+  groupDir: string,
+): Promise<ProcessedImage | null> {
+  if (!buffer || buffer.length === 0) return null;
+
+  const attachDir = path.join(groupDir, 'attachments');
+  fs.mkdirSync(attachDir, { recursive: true });
+
+  const filename = `sticker-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.png`;
+  const filePath = path.join(attachDir, filename);
+
+  await sharp(buffer).png().toFile(filePath);
+
+  const relativePath = `attachments/${filename}`;
+  return { content: `[Sticker: ${relativePath}]`, relativePath };
+}
+
 export function parseImageReferences(
   messages: Array<{ content: string }>,
 ): ImageAttachment[] {
@@ -58,8 +81,11 @@ export function parseImageReferences(
     let match: RegExpExecArray | null;
     IMAGE_REF_PATTERN.lastIndex = 0;
     while ((match = IMAGE_REF_PATTERN.exec(msg.content)) !== null) {
-      // Always JPEG — processImage() normalizes all images to .jpg
       refs.push({ relativePath: match[1], mediaType: 'image/jpeg' });
+    }
+    STICKER_REF_PATTERN.lastIndex = 0;
+    while ((match = STICKER_REF_PATTERN.exec(msg.content)) !== null) {
+      refs.push({ relativePath: match[1], mediaType: 'image/png' });
     }
   }
   return refs;

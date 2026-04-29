@@ -551,10 +551,17 @@ export class TelegramChannel implements Channel {
     );
   }
 
-  async sendImage(jid: string, imagePath: string, caption?: string): Promise<void> {
+  async sendImage(
+    jid: string,
+    imagePath: string,
+    caption?: string,
+  ): Promise<void> {
     if (!this.bot) throw new Error('Telegram bot not connected');
     const chatId = jid.replace('tg:', '');
-    const file = new InputFile(fs.readFileSync(imagePath), path.basename(imagePath));
+    const file = new InputFile(
+      fs.readFileSync(imagePath),
+      path.basename(imagePath),
+    );
     await this.bot.api.sendPhoto(chatId, file, {
       ...(caption ? { caption } : {}),
     });

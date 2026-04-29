@@ -1,1 +1,11 @@
-{}
+{
+  "permissions": {
+    "allow": [
+      "Bash(journalctl --user *)",
+      "Bash(systemctl --user status *)",
+      "Bash(systemctl --user is-active *)",
+      "Bash(onecli secrets list *)",
+      "mcp__pka__pka_search"
+    ]
+  }
+}

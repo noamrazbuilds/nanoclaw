@@ -28,7 +28,7 @@ import {
   storeReaction,
   updateChatName,
 } from '../db.js';
-import { isImageMessage, processImage } from '../image.js';
+import { isImageMessage, isStickerMessage, processImage, processSticker } from '../image.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import { isVoiceMessage, transcribeAudioMessage } from '../transcription.js';
@@ -325,6 +325,21 @@ export class WhatsAppChannel implements Channel {
             }
           }
 
+          // Sticker handling — download .webp and convert to PNG
+          if (isStickerMessage(msg)) {
+            try {
+              const buffer = await downloadMediaMessage(msg, 'buffer', {});
+              const groupDir = path.join(GROUPS_DIR, groups[chatJid].folder);
+              const result = await processSticker(buffer as Buffer, groupDir);
+              if (result) {
+                content = result.content;
+              }
+            } catch (err) {
+              logger.warn({ err, jid: chatJid }, 'Sticker - download failed');
+              content = '[Sticker]';
+            }
+          }
+
           // WhatsApp group mentions use the LID in raw text (e.g. "@80355281346633")
           // instead of the display name. Normalize to @AssistantName for trigger matching.
           if (this.botLidUser && content.includes(`@${this.botLidUser}`)) {
@@ -336,7 +351,7 @@ export class WhatsAppChannel implements Channel {
 
           // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
           // but allow voice messages through for transcription
-          if (!content && !isVoiceMessage(msg)) continue;
+          if (!content && !isVoiceMessage(msg) && !isStickerMessage(msg)) continue;
 
           const sender = msg.key.participant || msg.key.remoteJid || '';
           const senderName = msg.pushName || sender.split('@')[0];
@@ -515,10 +530,15 @@ export class WhatsAppChannel implements Channel {
     logger.info({ jid, filePath, filename: displayName }, 'Document sent');
   }
 
-  async sendImage(jid: string, imagePath: string, caption?: string): Promise<void> {
+  async sendImage(
+    jid: string,
+    imagePath: string,
+    caption?: string,
+  ): Promise<void> {
     const buffer = fs.readFileSync(imagePath);
     const ext = path.extname(imagePath).toLowerCase();
-    const mimetype = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
+    const mimetype =
+      ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png';
     await this.sock.sendMessage(jid, {
       image: buffer,
       mimetype,
