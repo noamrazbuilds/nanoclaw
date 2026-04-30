@@ -38,7 +38,7 @@ export const LOCAL_MODEL_TIMEOUT_MS = 600_000;
 export const LOCAL_TOOL_TIMEOUT_MS = 10_000;
 
 /** Grading config */
-export const GRADER_MODEL = 'claude-opus-4-6';
+export const GRADER_MODEL = 'claude-sonnet-4-6';
 export const GRADER_VERSION = '1.0.0';
 export const GRADER_MAX_RETRIES = 3;
 

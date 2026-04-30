@@ -2,7 +2,12 @@ import { ChildProcess } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
-import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
+import {
+  ASSISTANT_NAME,
+  DEFAULT_FALLBACK_MODEL,
+  SCHEDULER_POLL_INTERVAL,
+  TIMEZONE,
+} from './config.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -182,6 +187,15 @@ async function runTask(
         assistantName: ASSISTANT_NAME,
         script: task.script || undefined,
         model: task.model || undefined,
+        ...(group.containerConfig?.fallbackModel || DEFAULT_FALLBACK_MODEL
+          ? {
+              fallbackModel:
+                group.containerConfig?.fallbackModel || DEFAULT_FALLBACK_MODEL,
+            }
+          : {}),
+        ...(group.containerConfig?.allowModelDelegation === true && {
+          allowModelDelegation: true,
+        }),
       },
       (proc, containerName) =>
         deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
