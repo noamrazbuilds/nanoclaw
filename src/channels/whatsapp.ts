@@ -28,7 +28,12 @@ import {
   storeReaction,
   updateChatName,
 } from '../db.js';
-import { isImageMessage, isStickerMessage, processImage, processSticker } from '../image.js';
+import {
+  isImageMessage,
+  isStickerMessage,
+  processImage,
+  processSticker,
+} from '../image.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import { isVoiceMessage, transcribeAudioMessage } from '../transcription.js';
@@ -351,7 +356,8 @@ export class WhatsAppChannel implements Channel {
 
           // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
           // but allow voice messages through for transcription
-          if (!content && !isVoiceMessage(msg) && !isStickerMessage(msg)) continue;
+          if (!content && !isVoiceMessage(msg) && !isStickerMessage(msg))
+            continue;
 
           const sender = msg.key.participant || msg.key.remoteJid || '';
           const senderName = msg.pushName || sender.split('@')[0];
