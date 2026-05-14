@@ -669,7 +669,10 @@ export function createTask(
     task.id,
     task.group_folder,
     task.chat_jid,
-    task.prompt,
+    // Coerce to string: better-sqlite3 binds Buffer as BLOB, which then survives
+    // through JSON snapshots as `{type:"Buffer",data:[...]}` and breaks every
+    // consumer of t.prompt downstream (see task-scheduler.ts and list_tasks).
+    String(task.prompt),
     task.script || null,
     task.schedule_type,
     task.schedule_value,
@@ -725,7 +728,8 @@ export function updateTask(
 
   if (updates.prompt !== undefined) {
     fields.push('prompt = ?');
-    values.push(updates.prompt);
+    // Coerce to string — see note in createTask().
+    values.push(String(updates.prompt));
   }
   if (updates.script !== undefined) {
     fields.push('script = ?');

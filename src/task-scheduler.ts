@@ -1,6 +1,7 @@
 import { ChildProcess } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
+import path from 'path';
 
 import {
   ASSISTANT_NAME,
@@ -22,8 +23,9 @@ import {
   updateTaskAfterRun,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
-import { resolveGroupFolderPath } from './group-folder.js';
+import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
+import { isCreditError } from './oauth-refresh.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 /**
@@ -154,6 +156,10 @@ async function runTask(
 
   let result: string | null = null;
   let error: string | null = null;
+  // The Anthropic SDK returns credit errors as a `success` text result rather
+  // than throwing. Detect that text path and the conventional error path, and
+  // retry on Gemini once before giving up.
+  let creditErrorDetected = false;
 
   // For group context mode, use the group's current session
   const sessions = deps.getSessions();
@@ -172,6 +178,21 @@ async function runTask(
       logger.debug({ taskId: task.id }, 'Closing task container after result');
       deps.queue.closeStdin(task.chat_jid);
     }, TASK_CLOSE_DELAY_MS);
+  };
+
+  // Drop a `_close` sentinel into the container's IPC input dir so it exits
+  // immediately instead of sitting idle until IDLE_TIMEOUT.
+  const writeCloseSentinel = () => {
+    try {
+      const ipcInputDir = path.join(
+        resolveGroupIpcPath(task.group_folder),
+        'input',
+      );
+      fs.mkdirSync(ipcInputDir, { recursive: true });
+      fs.writeFileSync(path.join(ipcInputDir, '_close'), '');
+    } catch {
+      // best-effort
+    }
   };
 
   try {
@@ -200,6 +221,18 @@ async function runTask(
       (proc, containerName) =>
         deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
       async (streamedOutput: ContainerOutput) => {
+        // Anthropic credit-out: SDK returns the API error as a successful
+        // text result. Swallow it so the user doesn't see raw "Credit balance
+        // is too low", and close the container so we can retry on Gemini.
+        if (
+          streamedOutput.result &&
+          typeof streamedOutput.result === 'string' &&
+          isCreditError(streamedOutput.result)
+        ) {
+          creditErrorDetected = true;
+          writeCloseSentinel();
+          return;
+        }
         if (streamedOutput.result) {
           result = streamedOutput.result;
           if (!task.suppress_chat_output) {
@@ -213,13 +246,71 @@ async function runTask(
         }
         if (streamedOutput.status === 'error') {
           error = streamedOutput.error || 'Unknown error';
+          if (isCreditError(error)) creditErrorDetected = true;
         }
       },
     );
 
     if (closeTimer) clearTimeout(closeTimer);
 
-    if (output.status === 'error') {
+    // Final-output credit-error check covers both exit paths the SDK can take.
+    const creditErrorText = `${output.error || ''} ${typeof output.result === 'string' ? output.result : ''}`;
+    if (isCreditError(creditErrorText)) creditErrorDetected = true;
+
+    if (creditErrorDetected) {
+      logger.warn(
+        { taskId: task.id, group: group.name },
+        'Credit balance too low for scheduled task, retrying with Gemini',
+      );
+      if (!task.suppress_chat_output) {
+        await deps
+          .sendMessage(
+            task.chat_jid,
+            `Anthropic credit balance ran dry mid-task. Re-running this scheduled task on Gemini.`,
+          )
+          .catch(() => {});
+      }
+      // Reset state for the retry. Fresh isolated session — don't resume the
+      // credit-errored session (the SDK would just bounce back to the same
+      // Anthropic model). Cap at a single retry: if Gemini also fails, the
+      // error path below records it normally.
+      result = null;
+      error = null;
+      const retryOutput = await runContainerAgent(
+        group,
+        {
+          prompt: task.prompt,
+          // No sessionId — fresh container, no Claude session resume
+          groupFolder: task.group_folder,
+          chatJid: task.chat_jid,
+          isMain,
+          isScheduledTask: true,
+          assistantName: ASSISTANT_NAME,
+          script: task.script || undefined,
+          model: 'gemini-2.5-flash',
+          isOverflow: true,
+          slotId: 'credit-retry',
+        },
+        (proc, containerName) =>
+          deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
+        async (streamedOutput: ContainerOutput) => {
+          if (streamedOutput.result) {
+            result = streamedOutput.result;
+            if (!task.suppress_chat_output) {
+              await deps.sendMessage(task.chat_jid, streamedOutput.result);
+            }
+          }
+          if (streamedOutput.status === 'error') {
+            error = streamedOutput.error || 'Unknown error';
+          }
+        },
+      );
+      if (retryOutput.status === 'error') {
+        error = retryOutput.error || 'Unknown error';
+      } else if (retryOutput.result) {
+        result = retryOutput.result;
+      }
+    } else if (output.status === 'error') {
       error = output.error || 'Unknown error';
     } else if (output.result) {
       // Result was already forwarded to the user via the streaming callback above
