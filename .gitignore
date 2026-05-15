@@ -39,3 +39,8 @@ groups/*
 .nanoclaw/
 
 agents-sdk-docs
+
+# Migration scratch (v1→v2 — worktree-local, never committed)
+v1-messages-copy.db
+v1-*.backup
+migration-notes/scratch/
