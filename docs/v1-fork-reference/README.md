@@ -22,8 +22,8 @@ These files exist to be read as **reference**, not copied. Re-implementations la
 
 | File | What it carries |
 |---|---|
-| `src/channels/whatsapp.ts` | Baileys integration with inbound sticker handling (lines ~333-346), voice-message routing to `transcription.ts`, fork-specific reaction handler, document send via IPC, group LID normalization. **Sticker handler is the 30-min port (Decision 3).** |
-| `src/channels/telegram.ts` | Grammy integration with similar customizations: sticker emoji extraction (`[Sticker ${emoji}]`), document handling, reaction wiring. |
+| `src/channels/whatsapp.ts` | Baileys integration with inbound sticker handling (lines ~333-346, **U2**), voice-message routing to `transcription.ts` (**U1+CH1**), fork-specific reaction listener (**F6** — inbound reactions emit events into Porter-Features's storage), document send via IPC, group LID normalization. |
+| `src/channels/telegram.ts` | Grammy integration with similar customizations: sticker emoji extraction (`[Sticker ${emoji}]`), document handling, reaction listener (**F6**). |
 | `src/channels/registry.ts` | Channel self-registration registry pattern. v2 has its own registry — this is reference for understanding intent only. |
 | `src/channels/index.ts` | v1 channel barrel. v2's barrel shape is incompatible (Scout §2.2). |
 | `src/whatsapp-auth.ts` | Fork's WhatsApp auth flow. Clashes with upstream's `setup/whatsapp-auth.ts` — Phase 1b CH3 resolves. |
@@ -37,7 +37,7 @@ These files exist to be read as **reference**, not copied. Re-implementations la
 | `src/router.ts` | Message formatting + outbound routing. Daily-update suppression logic may also live here — check before spec extraction. |
 | `src/group-queue.ts` | Per-group serialization. Session-lifecycle hook points used by agent drift safeguards (24h rotation, skill-hash invalidation). **Spec target C3.** |
 | `src/container-runner.ts` | Container spawn. Reference for OneCLI CA cert handling integration (F4). |
-| `src/db.ts` | Single-file SQLite layer. Contains `createTask`/`updateTask` with the `String(prompt)` coercion from hotfix `8d42685` — **DROP per Decision (v2 uses TEXT throughout).** Other operations are reference for understanding what v2's `src/db/` needs to support. |
+| `src/db.ts` | Single-file SQLite layer. Contains `createTask`/`updateTask` with the `String(prompt)` coercion from hotfix `8d42685` — **DROP per Decision (v2 uses TEXT throughout).** Also contains: `task_audit_log` table schema and write hooks (**C5** — port whole audit subsystem); `reactions` table schema (**F6** — storage half of inbound reactions). Other operations are reference for understanding what v2's `src/db/` needs to support. |
 | `src/ipc.ts` | Stdio-frame IPC for sticker/reaction/document send. v2 replaced this entirely with two-SQLite-file model (`inbound.db` + `outbound.db`). Reference for understanding what operations the channels need from v2's outbound vocabulary. |
 
 ### Features (Porter-Features — re-host in v2 module layout)
@@ -46,7 +46,8 @@ These files exist to be read as **reference**, not copied. Re-implementations la
 |---|---|
 | `src/arena/` (11 files) | Model Arena 5-bot Telegram daily showdown. Uses `getDatabase()` from `src/db.ts` (which disappears in v2) — must re-host DB on a separate `arena.db` or v2 central DB with migrations (Scout §8.3). Keeps `grammy` directly; bypasses channel adapter. **Spec target F1.** |
 | `src/oauth-refresh.ts` | SOCKS5 tunnel through Synology NAS to bypass Cloudflare-OAuth refresh block. Network-topology workaround. **Spec target U4 — verify OneCLI obsoletes this before deciding to port.** |
-| `container/agent-runner/src/ipc-mcp-stdio.ts` | Fork's custom MCP-stdio bridge exposing `register_group`, `host_op`, `pause_task`, `resume_task`, `cancel_task`, `generate_image`, `react_to_message` agent tools. v2's bridge is gone (Bun-based, uses `mcp-tools/core.ts`). **Per-tool keep/drop decisions (Scout §3) — spec target F5.** |
+| `container/agent-runner/src/ipc-mcp-stdio.ts` | Fork's custom MCP-stdio bridge. **F5** owns: `register_group`, `host_op`, `pause_task`, `resume_task`, `cancel_task`, `generate_image`. **F6** owns `react_to_message` (split out 2026-05-18 — bundles with the inbound-reactions listener + table). v2's bridge is gone (Bun-based, uses `mcp-tools/core.ts`). Per-tool keep/drop decisions per Scout §3 — recommended 10-min production-log audit to identify dead code. |
+| `container/agent-runner/src/index.ts` | Container agent-runner entrypoint. Contains `archiveTranscriptOnExit()` SIGTERM handler (`PreCompact` archive function). **Spec target U6** — port ~30 LOC of SIGTERM markdown archive logic only; v2's per-turn DB writes + SDK `.jsonl` make wholesale crash-safe transcripts redundant. |
 
 ### Utils (Porter-Utils — phase 1a blockers + phase 1c finishers)
 
@@ -54,10 +55,10 @@ These files exist to be read as **reference**, not copied. Re-implementations la
 |---|---|
 | `src/transcription.ts` | OpenAI Whisper client + retry logic + language detection. **Phase 1a blocker U1** — channels can't ship until this lands. |
 | `src/image.ts` | Inbound image + sticker processing (sharp `.webp→.png`). **Phase 1a blocker U2** — includes the sticker handler for the WhatsApp skill fork. |
-| `src/status-tracker.ts` | Per-group status. **Phase 1c U3** — likely folds into v2's heartbeat lifecycle. |
-| `src/host-ops.ts` | Host-side ops invoked by the agent (file mgmt, etc.). Phase 1c U5. |
-| `src/slots.ts` | Slot allocation for concurrent agent runs. Phase 1c U5. |
-| `src/text-styles.ts` | Markdown ↔ channel-native formatting. v2 has channel-formatting skill (`upstream/skill/channel-formatting`) — check overlap. Phase 1c U5. |
+| `src/status-tracker.ts` | Per-group UX status surfaced via WhatsApp reaction emojis on user messages. **Phase 1c U3** — **PORT** (Verifier-2 2026-05-18 flipped from "drop"; v2 heartbeat is liveness infra, not per-message UX reactions). Depends on v2's outbound reaction op. |
+| `src/host-ops.ts` | Host-side ops invoked by the agent (file mgmt, etc.). **Phase 1c U5c** — likely import-path fixes only. |
+| `src/slots.ts` | Slot allocation for concurrent agent runs. **Phase 1c U5a** — likely import-path fixes only. |
+| `src/text-styles.ts` | Markdown ↔ channel-native formatting. **Phase 1c U5b** — likely REPLACE with v2's `upstream/skill/channel-formatting` skill (verify overlap at spec extraction). |
 
 ## Source-of-truth references
 
