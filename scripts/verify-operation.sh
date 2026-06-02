@@ -166,11 +166,19 @@ set -e
 TMP_STATUS="$(mktemp)"
 git status --porcelain >"$TMP_STATUS" 2>&1 || true
 
-# Abort any partial cherry-pick to leave the tree clean.
+# Abort any partial cherry-pick + fully reset the working tree to the
+# pre-op state. `git cherry-pick --abort` alone leaves unmerged index
+# entries when conflicts occurred; `git reset --hard HEAD` is safe here
+# because the NEEDS_CLEAN_TREE precondition guarantees HEAD == pre-op
+# state.
 if [ "$NEEDS_ABORT" -eq 1 ]; then
   if [ -f "$GIT_DIR/CHERRY_PICK_HEAD" ] || [ -d "$GIT_DIR/sequencer" ]; then
     git cherry-pick --abort >/dev/null 2>&1 || true
   fi
+  # Reset hard regardless — covers the case where abort succeeded but
+  # left unmerged paths behind (observed with `--no-commit` on heavy
+  # conflict sets). Safe because of the precondition above.
+  git reset --hard HEAD >/dev/null 2>&1 || true
 fi
 
 # Build the capture file. Deterministic structure for byte-for-byte diff.
