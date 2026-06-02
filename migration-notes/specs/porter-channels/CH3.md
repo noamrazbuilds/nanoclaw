@@ -11,7 +11,7 @@ The WhatsApp authentication script is a one-shot setup step that links the NanoC
 **Resolution: TAKE upstream verbatim. DROP v1's version.** Specifically:
 - **Keep**: `setup/whatsapp-auth.ts` from upstream's `whatsapp/main`. Already in v2 worktree from the base merge.
 - **Drop**: v1 fork's `src/whatsapp-auth.ts` (181 LOC). Frozen in `docs/v1-fork-reference/` as reference only; no code path imports it in v2.
-- **Verify on CH1 merge completion**: the Baileys `getPlatformId` fix at `setup/whatsapp-auth.ts:50-70` is still present (this fix is fork-original via upstream — confirm it survived any merge from the WhatsApp skill branches).
+- **Verify on CH1 completion**: the Baileys `getPlatformId` fix at `setup/whatsapp-auth.ts:50-70` is still present (this fix is fork-original via upstream — confirm it survived CH1's cherry-picks from the WhatsApp skill branches).
 - **No new code**. The decision IS the spec.
 
 ## v2-native equivalent that might suffice?
@@ -25,6 +25,6 @@ The WhatsApp authentication script is a one-shot setup step that links the NanoC
 ## Notes for Porter
 - **One-line task**: confirm v1's `src/whatsapp-auth.ts` is NOT referenced anywhere in v2's import graph (`grep -r "from.*whatsapp-auth\|from.*src/whatsapp-auth" src/ setup/`). If clean, no action. If anything imports the v1 path, replace with `setup/whatsapp-auth.ts` import.
 - **Smoke-test post-merge**: run `npm run setup:auth-whatsapp` (or whatever the setup:auto step name is) and verify the QR renders inside clack UI, not as raw stdout.
-- **Sequencing**: CH3 should run AFTER CH1 (so the WhatsApp skill merges are settled before validating the auth path). CH3 has zero dependencies on CH2 (Telegram).
+- **Sequencing**: CH3 should run AFTER CH1 (so the WhatsApp skill cherry-picks are settled before validating the auth path). CH3 has zero dependencies on CH2 (Telegram).
 - **No tests needed beyond smoke**: this is a one-shot setup script; behavior validation is "did it auth successfully?"
 - **Production migration**: existing `store/auth/` from v1 instance will Just Work post-merge — Baileys credentials are version-stable across the v1→v2 jump.
