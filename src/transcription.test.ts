@@ -55,9 +55,7 @@ describe('transcribeAudioBuffer', () => {
 
     expect(result).toBeNull();
     expect(mockReadEnvFile).toHaveBeenCalledWith(['OPENAI_API_KEY']);
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('OPENAI_API_KEY not set'),
-    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('OPENAI_API_KEY not set'));
 
     warnSpy.mockRestore();
     errorSpy.mockRestore();

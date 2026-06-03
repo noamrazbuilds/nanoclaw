@@ -65,6 +65,18 @@ The WhatsApp side **does work** because `whatsapp-fork/main` has all three files
 
 **Phase tag:** resolved within Phase 0. Worth noting for future scripts.
 
+## Finding F0-5 — `whatsapp-fork/main` has pre-existing pino-missing typecheck failure (out of U1-wa scope)
+
+**Found at:** Phase 2 row U1-wa, attempting standalone `pnpm run build` in the porter worktree at `/home/nanoclaw/nanoclaw-v2-porter-U1-wa`.
+
+**Issue:** `src/channels/whatsapp.ts:38` and `src/whatsapp-auth.ts:11` both `import pino from 'pino'` but `pino` is not in the fork's `package.json` dependencies. `pnpm run build` (tsc) fails with `TS2307: Cannot find module 'pino'`. **Confirmed pre-existing** via `git stash && pnpm run build` against unmodified `whatsapp-fork/main` — same errors before any U1-wa changes.
+
+**Implication:** Standalone build of `whatsapp-fork` does not pass and has not for some time. Verification of Phase 2 row changes on the fork must use content/sha-based checks rather than full typecheck. Full typecheck happens implicitly in Phase 3 when `/add-whatsapp` installs the file into a complete v2 install (which has pino as a transitive dep of `@chat-adapter/baileys` or similar).
+
+**Resolution:** `scripts/verify-spec-U1-wa.sh` uses content+sha checks (snippet presence, byte-match of `transcription.ts` and `whisper_transcribe.py` against the v2-migration sources, `pnpm install --frozen-lockfile` for lockfile consistency). Does not run `pnpm run build`.
+
+**Phase tag:** out-of-scope for individual Phase 2 rows; should be tracked as a fork-maintenance follow-up. Trivial fix: `pnpm add pino` on `whatsapp-fork/main` directly. Not blocking the migration.
+
 ## Finding F0-4 — Plan over-promised "template self-verifies"
 
 **Found at:** Phase 0 deliverable #3 (`migration-notes/specs/_TEMPLATE.md`).

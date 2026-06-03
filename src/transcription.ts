@@ -18,9 +18,7 @@ const WHISPER_SCRIPT = path.resolve(
 
 export const FALLBACK_MESSAGE = '[Voice Message - transcription unavailable]';
 
-async function transcribeWithLocalWhisper(
-  buffer: Buffer,
-): Promise<string | null> {
+async function transcribeWithLocalWhisper(buffer: Buffer): Promise<string | null> {
   const tmpFile = path.join(os.tmpdir(), `nc-voice-${Date.now()}.ogg`);
   try {
     fs.writeFileSync(tmpFile, buffer);
@@ -53,9 +51,7 @@ async function transcribeWithOpenAI(buffer: Buffer): Promise<string | null> {
   const apiKey = env.OPENAI_API_KEY;
 
   if (!apiKey) {
-    console.warn(
-      'OPENAI_API_KEY not set — OpenAI transcription fallback unavailable',
-    );
+    console.warn('OPENAI_API_KEY not set — OpenAI transcription fallback unavailable');
     return null;
   }
 
@@ -87,9 +83,7 @@ async function transcribeWithOpenAI(buffer: Buffer): Promise<string | null> {
  *
  * Returns the transcript string, or `FALLBACK_MESSAGE` if both paths fail.
  */
-export async function transcribeAudioBuffer(
-  buffer: Buffer,
-): Promise<string | null> {
+export async function transcribeAudioBuffer(buffer: Buffer): Promise<string | null> {
   const local = await transcribeWithLocalWhisper(buffer);
   if (local !== null) return local;
 
