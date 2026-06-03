@@ -346,6 +346,10 @@ run_step "1e-tasks" \
   "Port scheduled tasks" \
   "setup/migrate-v2/tasks.ts" "$V1_PATH"
 
+run_step "1f-container-configs" \
+  "Port per-group container configs" \
+  "setup/migrate-v2/container-configs.ts" "$V1_PATH"
+
 echo
 step_ok "Phase 1 complete"
 echo
