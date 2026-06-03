@@ -9,7 +9,7 @@ Adds WhatsApp support via the native Baileys adapter (no Chat SDK bridge).
 
 ## Install
 
-NanoClaw doesn't ship channels in trunk. This skill copies the native WhatsApp (Baileys) adapter and its `whatsapp-auth` setup step in from the `channels` branch. No Chat SDK bridge.
+NanoClaw doesn't ship channels in trunk. This skill copies the native WhatsApp (Baileys) adapter and its `whatsapp-auth` setup step in from `noamrazbuilds/nanoclaw-whatsapp` (the user's WhatsApp fork). No Chat SDK bridge. Switching the source from upstream's `channels` branch to this fork is the install-wiring change from `migration-notes/phase-2-revised-plan.md` Phase 0; it keeps fork-specific WhatsApp customizations consumable by v2 installs.
 
 ### Pre-flight (idempotent)
 
@@ -23,18 +23,20 @@ Skip to **Credentials** if all of these are already in place:
 
 Otherwise continue. Every step below is safe to re-run.
 
-### 1. Fetch the channels branch
+### 1. Ensure the WhatsApp fork remote is configured
 
 ```bash
-git fetch origin channels
+git remote get-url whatsapp-fork >/dev/null 2>&1 \
+  || git remote add whatsapp-fork https://github.com/noamrazbuilds/nanoclaw-whatsapp.git
+git fetch whatsapp-fork main
 ```
 
 ### 2. Copy the adapter and setup steps
 
 ```bash
-git show origin/channels:src/channels/whatsapp.ts > src/channels/whatsapp.ts
-git show origin/channels:setup/whatsapp-auth.ts   > setup/whatsapp-auth.ts
-git show origin/channels:setup/groups.ts          > setup/groups.ts
+git show whatsapp-fork/main:src/channels/whatsapp.ts > src/channels/whatsapp.ts
+git show whatsapp-fork/main:setup/whatsapp-auth.ts   > setup/whatsapp-auth.ts
+git show whatsapp-fork/main:setup/groups.ts          > setup/groups.ts
 ```
 
 ### 3. Append the self-registration import
