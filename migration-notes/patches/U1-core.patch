@@ -1,0 +1,155 @@
+diff --git a/migration-notes/specs/porter-utils/U1.md b/migration-notes/specs/porter-utils/U1.md
+index da83ef2..c823bb6 100644
+--- a/migration-notes/specs/porter-utils/U1.md
++++ b/migration-notes/specs/porter-utils/U1.md
+@@ -1,29 +1,79 @@
+ # U1 — Voice transcription (WhatsApp + Telegram)
+ 
++- **mechanism:** intent-port
++
++This row has three sub-components, all intent-ported because: (a) the only cherry-pick target (`c054cbc` on `whatsapp/skill/voice-transcription`) has 4 expected conflicts against `whatsapp-fork/main` (verified 2026-06-02 via `git merge-tree`), and (b) Telegram has no skill commit to pick from — there's only the v1 fork's pattern to replicate. Intent-porting all three keeps the mechanism uniform and transparent.
++
+ ## Source (v1)
+-- Primary: `docs/v1-fork-reference/src/transcription.ts` (140 LOC; exports `transcribeAudioBuffer`, `transcribeAudioMessage`, `isVoiceMessage`)
+-- Helper: `scripts/whisper_transcribe.py` (production tree; faster-whisper, CPU+int8, model cache at `data/whisper-models/`, env `WHISPER_MODEL` default `base`)
+-- Call sites: `docs/v1-fork-reference/src/channels/whatsapp.ts:39,376-383` + `src/channels/telegram.ts:10,341-375`
+-- Origin commits: `c054cbc` (upstream skill — OpenAI), `0ccecbd` (upstream skill — local whisper.cpp), `468caba` (fork: faster-whisper + Telegram), `77e476d` (fork: voice-transcription bugfix). No relevant hotfix.
++- Primary helper: `docs/v1-fork-reference/src/transcription.ts` (132 LOC; exports `transcribeAudioBuffer`, `transcribeAudioMessage`, `isVoiceMessage`, plus `FALLBACK_MESSAGE` constant).
++- Backend script: `/home/nanoclaw/NanoClaw/scripts/whisper_transcribe.py` (faster-whisper, CPU+int8, model cache at `data/whisper-models/`, env `WHISPER_MODEL` default `base`).
++- WhatsApp call site: `docs/v1-fork-reference/src/channels/whatsapp.ts:39,376-383`.
++- Telegram call site: `docs/v1-fork-reference/src/channels/telegram.ts:10,341-375`.
++- Reference upstream commits (NOT to cherry-pick): `c054cbc` (skill/voice-transcription — OpenAI half), `0ccecbd` (skill/use-local-whisper — macOS-only, do not port).
+ 
+ ## Behavioral spec (one paragraph)
+-When an inbound voice message arrives on any registered channel (WhatsApp `audioMessage.ptt=true` via Baileys, or Telegram `message:voice` via grammY), the channel adapter downloads the audio buffer (`downloadMediaMessage` / Bot API `getFile`+fetch) and routes it through a **channel-agnostic** `transcribeAudioBuffer(buffer): Promise<string|null>` helper. The helper tries local faster-whisper first (subprocess to `scripts/whisper_transcribe.py`, 60s timeout, `WHISPER_PYTHON` interpreter override allowed); on null/error it falls back to the OpenAI Whisper API (`whisper-1`, `response_format: 'text'`, key from `OPENAI_API_KEY`); on full failure it returns the fixed string `[Voice Message - transcription unavailable]`. The transcript replaces the otherwise-empty message content before storage/routing so the agent receives voice notes as text. Reason: zero-cost path when local works, reliable fallback when it doesn't, and unified surface across channels — voice notes are first-class user input.
++
++When an inbound voice message arrives on any registered channel (WhatsApp `audioMessage.ptt=true` via Baileys, or Telegram `message:voice` via grammY), the channel adapter downloads the audio buffer and routes it through a channel-agnostic `transcribeAudioBuffer(buffer): Promise<string|null>` helper in v2 core. The helper tries local faster-whisper first (subprocess to `scripts/whisper_transcribe.py`, 60s timeout, `WHISPER_PYTHON` interpreter override allowed); on null/error it falls back to the OpenAI Whisper API (`whisper-1`, `response_format: 'text'`, key from `OPENAI_API_KEY` via `readEnvFile`); on full failure it returns the fixed string `[Voice Message - transcription unavailable]`. The transcript replaces the otherwise-empty message content before storage/routing so the agent receives voice notes as text. Reason: zero-cost path when local works, reliable fallback when it doesn't, unified surface across channels — voice notes are first-class user input.
+ 
+ ## v2 hook point(s)
+-- WhatsApp inbound handler: `src/channels/whatsapp.ts` in the `nanoclaw-whatsapp` fork (Porter-Channels merges upstream's `whatsapp/skill/voice-transcription` first, then layers fork delta).
+-- Telegram inbound handler: `src/channels/telegram.ts` in the `nanoclaw-telegram` fork — `bot.on('message:voice')` registration + buffer-download + helper call. **Upstream has no Telegram voice support** — fork-only addition (~30 LOC).
+-- Shared helper placement: `src/transcription.ts` (channel-agnostic file in v2 core, exporting `transcribeAudioBuffer(buffer)`). Upstream's helper is WhatsApp-bound (`transcribeAudioMessage(msg, sock)`); extract the buffer-only entrypoint for cross-channel reuse.
+-- Backend script: `scripts/whisper_transcribe.py` preserved verbatim from v1.
++
++Three sub-components, each tagged with a stable id used in the verification artifacts:
++
++### U1-core (in `nanoclaw-v2`, branch `v2-migration`)
++- Create `src/transcription.ts` exporting `transcribeAudioBuffer(buffer: Buffer): Promise<string | null>` and `FALLBACK_MESSAGE` constant. The implementation is the v1 source with WhatsApp-specific exports (`transcribeAudioMessage`, `isVoiceMessage`) **removed** — those belong in the WhatsApp adapter, not v2 core.
++- Copy `scripts/whisper_transcribe.py` verbatim from production.
++- Import path for OpenAI key: `import { readEnvFile } from './env.js'` (verified API-identical to v1 helper).
++
++### U1-wa (in `whatsapp-fork/main`, working tree at `/home/nanoclaw/nanoclaw-whatsapp-work`)
++- Add `isVoiceMessage(msg): boolean` and a voice download/transcribe call in the inbound message handler of `src/channels/whatsapp.ts`. Use v1's pattern (`docs/v1-fork-reference/src/channels/whatsapp.ts:376-383`) as the structural reference.
++- Voice messages route through `transcribeAudioBuffer` from v2 core. Empty content gets the transcript or `FALLBACK_MESSAGE`.
++- Add `openai` and (if not already present) Baileys' `downloadMediaMessage` dep. Use the pinned versions from `c054cbc`.
++
++### U1-tg (in `telegram-fork/main`, working tree at `/home/nanoclaw/nanoclaw-telegram-work`)
++- `bot.on('message:voice', ...)` **already registered** in `src/channels/telegram.ts` at line 311 as a bare placeholder (`storeMedia(ctx, '[Voice message]', { fileId, filename })`). **Replace the handler body** to: download buffer via Bot API `getFile` + fetch, call `transcribeAudioBuffer`, replace `[Voice message]` placeholder with transcript or `FALLBACK_MESSAGE`. NO new registration; NO change to other handlers.
++- Reference pattern: `docs/v1-fork-reference/src/channels/telegram.ts:341-375`.
+ 
+ ## v2-native equivalent that might suffice?
+-**PARTIAL-OVERLAP.** Upstream's `whatsapp/skill/voice-transcription` provides the OpenAI Whisper path with feature parity (same fallback string, same `whisper-1` model, same `response_format: 'text'`, same `isVoiceMessage` predicate). Upstream's `.claude/skills/use-local-whisper` provides a local-whisper option but via the `whisper-cli` binary (Homebrew, macOS-oriented). Gaps vs. v1: (a) Linux backend for local — keep v1's faster-whisper Python OR build whisper.cpp from source; (b) channel-agnostic `transcribeAudioBuffer` helper — extract from upstream's WhatsApp-bound version; (c) Telegram voice support — fork-only, no upstream equivalent. Net: apply two upstream skills + ~50 LOC of fork delta (helper extraction + Telegram handler + Linux local-whisper wiring).
++
++**PARTIAL-OVERLAP.** v2 core has `src/env.ts:readEnvFile` (identical API to v1 helper — verified). It has no transcription helper. Upstream's `whatsapp/skill/voice-transcription` (commit `c054cbc`) covers the OpenAI half — but its mechanism is broken (4-conflict cherry-pick against `whatsapp-fork/main`, verified 2026-06-02). Telegram has no upstream skill. Net: ~100 LOC v2 core helper + ~30 LOC WhatsApp fork delta + ~30 LOC Telegram fork delta + 1 file copy (`whisper_transcribe.py`).
++
++## Verification artifact
++
++- **Patch files** (intent diffs, applied via Edit/Write per the new mechanism):
++  - U1-core: `migration-notes/patches/U1-core.patch` — `src/transcription.ts` (new) + `scripts/whisper_transcribe.py` (copy from `/home/nanoclaw/NanoClaw/scripts/whisper_transcribe.py`).
++  - U1-wa: `migration-notes/patches/U1-wa.patch` — diff against `whatsapp-fork/main`, applied in the WA worktree.
++  - U1-tg: `migration-notes/patches/U1-tg.patch` — diff against `telegram-fork/main`, applied in the TG worktree.
++- **Verify script:** `scripts/verify-spec-U1.sh` — runs `pnpm run build` (typecheck) + `pnpm exec vitest run src/transcription.test.ts` + (if WA/TG worktrees present) `git diff --stat` against expected file lists. Exits 0 on full match.
++- **Captured expected output:** `migration-notes/verification-outputs/U1.txt` — produced by first successful verify run, then re-validated by Porter on each re-run.
+ 
+ ## Decisions / open questions
+-1. **Local-whisper backend on Linux: KEEP v1's faster-whisper Python (decided 2026-05-19).** Already working on production Linux server; switching to upstream's `whisper-cli` requires building whisper.cpp from source (Homebrew path is macOS-only); faster-whisper + CTranslate2 + int8 is competitive with whisper.cpp on CPU; transcription is a leaf utility so divergence cost is low. **Revisit when the Mac mini comes online** (see `reference_home_network.md`) — upstream's `whisper-cli` becomes the natural path then; swap is a one-file change in `transcription.ts`.
+-2. **Helper module placement: v2 core (`src/transcription.ts`).** The channel-agnostic `transcribeAudioBuffer(buffer)` is called by both WhatsApp and Telegram adapters, so it has to live somewhere both can import — only v2 core qualifies.
+-3. **OpenAI API key wiring: RESOLVED 2026-05-19.** v2's `src/env.ts` exposes `readEnvFile(keys: string[])` — API-identical to v1's helper (same `.env` lookup in `process.cwd()`, same opt-in pattern, deliberately does NOT load to `process.env` to prevent child-process leakage). v1's call `readEnvFile(['OPENAI_API_KEY'])` transfers verbatim. Transcription stays host-side (audio buffer lives in the channel adapter before container dispatch) so OneCLI's container-side secret-injection path is irrelevant here.
++
++1. **Local-whisper backend on Linux: KEEP v1's faster-whisper Python** (decided 2026-05-19, re-affirmed 2026-06-03). Already working on production. Upstream's `whisper-cli` (commit `0ccecbd`) assumes macOS Homebrew. Revisit when Mac mini comes online — swap is a one-file change in `transcription.ts`. `git show` reference: `git show docs/v1-fork-reference/src/transcription.ts:24-51` (the `transcribeWithLocalWhisper` body that's being preserved).
++2. **`isVoiceMessage` placement: WhatsApp adapter, not v2 core.** v1's predicate checks `msg.message?.audioMessage?.ptt` — Baileys-specific. Each channel adapter owns its own voice-detection. Telegram has `'message:voice'` event name as its trigger (no explicit predicate needed). Confirmed by reading both v1 call sites.
++3. **OpenAI API key wiring: via `readEnvFile`** (decided 2026-05-19). Stays host-side because the audio buffer lives in the channel adapter before container dispatch — OneCLI container-side injection is irrelevant.
++4. **Whisper subprocess from container:** N/A. Transcription runs host-side in v2 (same as v1). The subprocess to `whisper_transcribe.py` runs on the host; nothing crosses the container boundary.
+ 
+ ## Notes for Porter
+-- **Confirm at spec extraction** (per queue note): grep upstream main for any newer transcription module that might supersede the skill branch. If upstream has merged voice-transcription into main since 2026-05-19, drop the skill-merge step and use main's version.
+-- The fallback string `[Voice Message - transcription unavailable]` is user-visible — preserve verbatim across all error paths.
+-- Verify `WHISPER_MODEL` env propagation through the subprocess invocation; v1 uses `{ ...process.env, WHISPER_MODEL: model }`. The subprocess only reads `WHISPER_MODEL` (and PATH for the Python binary); the OpenAI key is read separately via `readEnvFile`, so it does not leak into the faster-whisper subprocess.
++
++- **Pre-flight:** `bash scripts/lock-spec.sh U1` must exit 0 before any porting action.
++- **Working trees:**
++  - U1-core changes: current `~/nanoclaw-v2` (branch `v2-migration`).
++  - U1-wa changes: create via `bash scripts/setup-porter-worktree.sh U1-wa --base whatsapp-fork/main --path ~/nanoclaw-v2-porter-U1-wa`.
++  - U1-tg changes: create via `bash scripts/setup-porter-worktree.sh U1-tg --base telegram-fork/main --path ~/nanoclaw-v2-porter-U1-tg`.
++- **Apply order:** U1-core first (no dependencies). Then U1-wa and U1-tg in parallel (no cross-dependencies). Each ends with `bash scripts/verify-spec-U1.sh` on its scope.
++- **Pushes:** none from this row. Channel-fork branches stay local on the worktree until cutover (or until explicit user approval to push to remote `main`).
++- **Fallback string** `[Voice Message - transcription unavailable]` is user-visible — preserve verbatim across all error paths in all three sub-components.
++- **`WHISPER_MODEL` env propagation:** subprocess receives `{ ...process.env, WHISPER_MODEL: model }`. OpenAI key is read separately via `readEnvFile` so it does not leak into the faster-whisper subprocess.
++- **Anti-fabrication check:** every code claim in this spec links to a `git show` or file path. Re-run those before lock to catch drift.
++
++## Confirm-before-cherry-pick step (per Pass A audit)
++
++Verify upstream/main hasn't merged a transcription module since 2026-05-19:
++
++```bash
++git fetch upstream
++git log upstream/main..whatsapp/skill/voice-transcription --oneline
++git grep -l 'transcribeAudio' upstream/main
++```
++
++If upstream/main now ships a transcription module that supersedes `c054cbc`, **STOP** and report — drop the intent-port and adopt main's version instead.
+diff --git a/package.json b/package.json
+index e10b872..1276977 100644
+--- a/package.json
++++ b/package.json
+@@ -34,7 +34,8 @@
+     "better-sqlite3": "11.10.0",
+     "chat": "^4.24.0",
+     "cron-parser": "5.5.0",
+-    "kleur": "^4.1.5"
++    "kleur": "^4.1.5",
++    "openai": "^6.41.0"
+   },
+   "devDependencies": {
+     "@eslint/js": "^9.35.0",
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 902b6ae..0ca794b 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -29,6 +29,9 @@ importers:
+       kleur:
+         specifier: ^4.1.5
+         version: 4.1.5
++      openai:
++        specifier: ^6.41.0
++        version: 6.41.0
+     devDependencies:
+       '@eslint/js':
+         specifier: ^9.35.0
+@@ -1150,6 +1153,17 @@ packages:
+   once@1.4.0:
+     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
+ 
++  openai@6.41.0:
++    resolution: {integrity: sha512-IGWPopZq6Rjoynjfb3NSLf/z2MTw7UiOsm9TAjPGAjUESH7Uq41Trg4QWehBEn58p74i+m7uoRPV2vXcpPXhyA==}
++    peerDependencies:
++      ws: ^8.18.0
++      zod: ^3.25 || ^4.0
++    peerDependenciesMeta:
++      ws:
++        optional: true
++      zod:
++        optional: true
++
+   optionator@0.9.4:
+     resolution: {integrity: sha512-6IpQ7mKUxRcZNLIObR0hz7lxsapSSIYNZJwXPGeF0mTVqGKFIXj1DQcMoT22S3ROcLyY/rz0PWaWZ9ayWmad9g==}
+     engines: {node: '>= 0.8.0'}
+@@ -2641,6 +2655,8 @@ snapshots:
+     dependencies:
+       wrappy: 1.0.2
+ 
++  openai@6.41.0: {}
++
+   optionator@0.9.4:
+     dependencies:
+       deep-is: 0.1.4
