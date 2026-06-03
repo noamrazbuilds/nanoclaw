@@ -37,6 +37,11 @@ interface V1Task {
   status: string;
   context_mode: string | null;
   script: string | null;
+  // Fork-only columns added by /home/nanoclaw/NanoClaw/src/db.ts:128,136.
+  // Optional because a fresh v1 install predating those ALTER statements
+  // would not have them; better-sqlite3 returns undefined for absent columns.
+  model?: string | null;
+  suppress_chat_output?: number | null;
 }
 
 function toCron(t: V1Task): { processAfter: string; recurrence: string | null } | null {
@@ -155,6 +160,12 @@ async function main(): Promise<void> {
           content: JSON.stringify({
             prompt: t.prompt,
             script: t.script ?? null,
+            // Fork-only v1 columns. Preserved here as top-level fields so
+            // C4 part 2 (scheduling-executor runtime gate, not yet ported)
+            // can read them without re-migrating. See
+            // migration-notes/data-migration-gaps.md gaps G1, G2.
+            model: t.model ?? null,
+            suppress_chat_output: (t.suppress_chat_output ?? 0) === 1,
             migrated_from_v1: { original_id: t.id, context_mode: t.context_mode ?? null },
           }),
         });
