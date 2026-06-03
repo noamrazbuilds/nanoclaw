@@ -39,7 +39,7 @@ The WhatsApp side **does work** because `whatsapp-fork/main` has all three files
 
 **Phase tag:** Phase 0 prerequisite for `add-telegram` install-wiring; should be resolved before Phase 2 batch 2 (Telegram porting) so that Phase 2 work is install-reachable at cutover. Tracked in TaskList as a sub-task of the Phase 2+ implementation.
 
-**Status:** add-telegram/SKILL.md reverted to original (fetches from `origin/channels`) so the install isn't broken. Need to revisit.
+**Status:** ✅ RESOLVED 2026-06-03. Option 1 executed: 5 missing files synced from `upstream/channels` (at `43adb19`) into `noamrazbuilds/nanoclaw-telegram/main` via fast-forward push (commit `5dbe118` on telegram-fork main). After sync, all 6 files referenced by `add-telegram/SKILL.md` verified present in `telegram-fork/main`. The SKILL.md was then flipped to fetch from `telegram-fork/main` instead of `origin/channels`. Phase 0 install-wiring (deliverable #4) is now complete for both WhatsApp and Telegram.
 
 ## Finding F0-2 — `.git` is a worktree pointer file, not a directory (script bug)
 
@@ -82,9 +82,9 @@ The WhatsApp side **does work** because `whatsapp-fork/main` has all three files
 - ✅ Deliverable #1: `scripts/verify-operation.sh` (with F0-2 fix)
 - ✅ Deliverable #2: `scripts/lock-spec.sh` (with F0-3 fix)
 - ✅ Deliverable #3: `migration-notes/specs/_TEMPLATE.md` (with F0-4 noted)
-- ⚠️ Deliverable #4: install-wiring fix
+- ✅ Deliverable #4: install-wiring fix
   - ✅ WhatsApp side: `add-whatsapp/SKILL.md` flipped to `whatsapp-fork/main`
-  - ❌ Telegram side: blocked by F0-1; add-telegram/SKILL.md reverted to original
-- ⏳ Deliverable #5: pre-created porter worktree
+  - ✅ Telegram side: `add-telegram/SKILL.md` flipped to `telegram-fork/main` after F0-1 resolution
+- ✅ Deliverable #5: `scripts/setup-porter-worktree.sh`
 
-Phase 0 is **substantially complete** but Telegram install-wiring is the open thread. The plan's checks-and-balances item 4 ("Issue 5 (install-wiring): Phase 0 deliverable; no row in Phase 2 can be marked complete until install-wiring is verified") needs a per-channel scoping: WhatsApp install-wiring is verified; Telegram install-wiring is not.
+**Phase 0 is COMPLETE** as of 2026-06-03.
