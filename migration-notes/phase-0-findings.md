@@ -77,6 +77,23 @@ The WhatsApp side **does work** because `whatsapp-fork/main` has all three files
 
 **Phase tag:** out-of-scope for individual Phase 2 rows; should be tracked as a fork-maintenance follow-up. Trivial fix: `pnpm add pino` on `whatsapp-fork/main` directly. Not blocking the migration.
 
+## Finding F0-6 — `telegram-fork/main` has v2-style import in synced telegram-pairing.ts (out of U1-tg scope)
+
+**Found at:** Phase 2 row U1-tg, attempting standalone `pnpm run build` in the porter worktree.
+
+**Issue:** `src/channels/telegram-pairing.ts:21` imports from `'../log.js'` (v2 path), but `telegram-fork/main` is a v1-architecture fork that has `'../logger.js'` (v1 path). Same class of issue as F0-5. Introduced by the F0-1 sync (2026-06-03) when we copied 5 files from `upstream/channels` into `telegram-fork/main` to unblock the `add-telegram` install-wiring change.
+
+**Implication:** Standalone build of `telegram-fork` doesn't pass. Verification of Phase 2 rows on this fork uses content/sha-based checks. Install-context (where `/add-telegram` deposits the files into a complete v2 install that DOES have `src/log.ts`) resolves correctly.
+
+**Resolution:** `scripts/verify-spec-U1-tg.sh` uses content+sha checks, skips full typecheck.
+
+**Phase tag:** out-of-scope for U1-tg. Long-term fix is one of:
+- Patch the synced files on `telegram-fork/main` to use v1-style imports (sed `../log.js` → `../logger.js`).
+- Add a `src/log.ts` shim that re-exports from `../logger.js`.
+- Bump the fork to v2 architecture (large work, not blocking).
+
+Trivial fork-maintenance follow-up; not blocking the migration.
+
 ## Finding F0-4 — Plan over-promised "template self-verifies"
 
 **Found at:** Phase 0 deliverable #3 (`migration-notes/specs/_TEMPLATE.md`).
