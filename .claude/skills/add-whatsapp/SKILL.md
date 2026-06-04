@@ -9,7 +9,7 @@ Adds WhatsApp support via the native Baileys adapter (no Chat SDK bridge).
 
 ## Install
 
-NanoClaw doesn't ship channels in trunk. This skill copies the native WhatsApp (Baileys) adapter and its `whatsapp-auth` setup step in from `noamrazbuilds/nanoclaw-whatsapp` (the user's WhatsApp fork). No Chat SDK bridge. Switching the source from upstream's `channels` branch to this fork is the install-wiring change from `migration-notes/phase-2-revised-plan.md` Phase 0; it keeps fork-specific WhatsApp customizations consumable by v2 installs.
+NanoClaw doesn't ship channels in trunk. This skill copies the v2-native WhatsApp (Baileys) adapter and its `whatsapp-auth` setup step in from the user's fork's `channels` branch (`origin/channels`, seeded from upstream and carrying any fork-specific WhatsApp customizations). No Chat SDK bridge. (Supersedes the abandoned Phase-0 attempt to fetch from the v1-lineage `nanoclaw-whatsapp` repo — that adapter is architecturally incompatible with v2; see `migration-notes/batch1-fork-to-v2-integration-gap.md`.)
 
 ### Pre-flight (idempotent)
 
@@ -19,26 +19,22 @@ Skip to **Credentials** if all of these are already in place:
 - `src/channels/index.ts` contains `import './whatsapp.js';`
 - `setup/whatsapp-auth.ts` and `setup/groups.ts` both exist
 - `setup/index.ts`'s `STEPS` map contains both `'whatsapp-auth':` and `groups:`
-- `src/image.ts` exists (image + sticker handling, fork-only)
-- `@whiskeysockets/baileys`, `qrcode`, `pino`, `sharp`, `openai` are listed in `package.json` dependencies
+- `@whiskeysockets/baileys`, `qrcode`, `pino` are listed in `package.json` dependencies
 
 Otherwise continue. Every step below is safe to re-run.
 
-### 1. Ensure the WhatsApp fork remote is configured
+### 1. Fetch the channels branch
 
 ```bash
-git remote get-url whatsapp-fork >/dev/null 2>&1 \
-  || git remote add whatsapp-fork https://github.com/noamrazbuilds/nanoclaw-whatsapp.git
-git fetch whatsapp-fork main
+git fetch origin channels
 ```
 
 ### 2. Copy the adapter and setup steps
 
 ```bash
-git show whatsapp-fork/main:src/channels/whatsapp.ts > src/channels/whatsapp.ts
-git show whatsapp-fork/main:setup/whatsapp-auth.ts   > setup/whatsapp-auth.ts
-git show whatsapp-fork/main:setup/groups.ts          > setup/groups.ts
-git show whatsapp-fork/main:src/image.ts             > src/image.ts
+git show origin/channels:src/channels/whatsapp.ts > src/channels/whatsapp.ts
+git show origin/channels:setup/whatsapp-auth.ts   > setup/whatsapp-auth.ts
+git show origin/channels:setup/groups.ts          > setup/groups.ts
 ```
 
 ### 3. Append the self-registration import
@@ -61,7 +57,7 @@ groups: () => import('./groups.js'),
 ### 5. Install the adapter packages (pinned)
 
 ```bash
-pnpm install @whiskeysockets/baileys@7.0.0-rc.9 qrcode@1.5.4 @types/qrcode@1.5.6 pino@9.6.0 sharp openai@^6.27.0
+pnpm install @whiskeysockets/baileys@7.0.0-rc.9 qrcode@1.5.4 @types/qrcode@1.5.6 pino@9.6.0
 ```
 
 ### 6. Build
