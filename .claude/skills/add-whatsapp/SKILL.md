@@ -19,7 +19,8 @@ Skip to **Credentials** if all of these are already in place:
 - `src/channels/index.ts` contains `import './whatsapp.js';`
 - `setup/whatsapp-auth.ts` and `setup/groups.ts` both exist
 - `setup/index.ts`'s `STEPS` map contains both `'whatsapp-auth':` and `groups:`
-- `@whiskeysockets/baileys`, `qrcode`, `pino` are listed in `package.json` dependencies
+- `src/image.ts` exists (image + sticker handling, fork-only)
+- `@whiskeysockets/baileys`, `qrcode`, `pino`, `sharp`, `openai` are listed in `package.json` dependencies
 
 Otherwise continue. Every step below is safe to re-run.
 
@@ -37,6 +38,7 @@ git fetch whatsapp-fork main
 git show whatsapp-fork/main:src/channels/whatsapp.ts > src/channels/whatsapp.ts
 git show whatsapp-fork/main:setup/whatsapp-auth.ts   > setup/whatsapp-auth.ts
 git show whatsapp-fork/main:setup/groups.ts          > setup/groups.ts
+git show whatsapp-fork/main:src/image.ts             > src/image.ts
 ```
 
 ### 3. Append the self-registration import
@@ -59,7 +61,7 @@ groups: () => import('./groups.js'),
 ### 5. Install the adapter packages (pinned)
 
 ```bash
-pnpm install @whiskeysockets/baileys@7.0.0-rc.9 qrcode@1.5.4 @types/qrcode@1.5.6 pino@9.6.0
+pnpm install @whiskeysockets/baileys@7.0.0-rc.9 qrcode@1.5.4 @types/qrcode@1.5.6 pino@9.6.0 sharp openai@^6.27.0
 ```
 
 ### 6. Build
