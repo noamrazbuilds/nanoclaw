@@ -34,3 +34,48 @@ Until one is chosen, U1/U2/F6 (and any further WhatsApp channel rows, e.g. CH1/C
 ## Status of committed rows
 
 - U1 (voice), U2 (image), F6 (reactions): faithfully ported + verified **in the fork**; committed on local `porter-*` branches; patches captured under `migration-notes/patches/`. None pushed to fork `main`. No current v2 install is affected (the skill fetches `whatsapp-fork/main`, which lacks the ports, and the build was already broken independently).
+
+---
+
+## Resolution (2026-06-04): adopt upstream's v2-native adapter; re-target deltas
+
+Decided with Noam after confirming a v2-native Baileys adapter already exists upstream. Chosen over the v1-compat shim and over writing a v2 adapter from scratch.
+
+### Root cause
+There are **two unrelated `whatsapp.ts`**:
+- `upstream/channels:src/channels/whatsapp.ts` — the **v2-native** Baileys adapter (910 lines; `registerChannelAdapter`, `../config.js`, `../log.js`, `./channel-registry.js`). Already contains image/reaction/voice scaffolding (`grep -ciE` → image 4, reaction 3, voice 1).
+- `whatsapp-fork/main` (fork of `qwibitai/nanoclaw-whatsapp`) — a **v1-lineage standalone app** (`registerChannel`, `../db.js`, `../logger.js`, file-IPC, its own `index.ts`/`ipc.ts`/`container/agent-runner`).
+
+The Phase-0 install-wiring fix saw `origin/channels` missing (true — `noamrazbuilds/nanoclaw` has no `channels` branch: `git ls-remote --heads origin | grep channels` → empty) and repointed `/add-whatsapp` at `whatsapp-fork/main` (the v1 standalone) instead of seeding a `channels` branch with the v2 adapter. That is the defect.
+
+### Plan
+1. Seed `origin/channels` on `noamrazbuilds/nanoclaw` from `upstream/channels` — the v2 adapter's proper home; fixes the missing-branch root cause.
+2. **Per-feature gap analysis** of each WhatsApp feature row against the v2 adapter (results appended below). Rows that the v2 adapter already covers collapse to no-ops or small deltas.
+3. Re-target only the genuine deltas onto the v2 adapter, using the existing U1/U2/F6/CH* specs + patches as the **behavioral intent source** (not as v2 code).
+4. Repoint `.claude/skills/add-whatsapp/SKILL.md` at `origin/channels`; `pnpm run build` must pass on a fresh v2 checkout.
+
+### Why not the v1-compat shim
+The fork's v1 adapter needs more than `src/db.ts` + `src/logger.ts`: it assumes the v1 file-IPC watcher, the v1 session/DB model, the `registerChannel` registry, and the v1 `container/agent-runner` (`ipc-mcp-stdio.ts`). A shim would rebuild v1 inside v2 and saddle the codebase with two channel architectures permanently — to avoid re-applying a handful of small deltas onto an adapter that already exists.
+
+### Status of the fork-port artifacts
+U1/U2/F6 fork ports stay committed on their local `porter-*` branches as **behavioral reference**; they are NOT v2 deliverables and must NOT be pushed to fork `main`. The Batch-1 mechanism changes from "port into the v1 fork" to "re-target deltas onto `origin/channels` (v2 adapter)."
+
+### Gap analysis (per feature, vs `upstream/channels:src/channels/whatsapp.ts` + v2 infra)
+
+Run 2026-06-04 (three independent read-only passes). Headline: **the v2 adapter + v2 core already cover most of Batch 1.** The committed fork patches (`U1-wa.patch`, `U2.patch`, `F6.patch`) should **NOT** be applied to v2 — they target the old class-based fork adapter and v1's file-IPC/`store/messages.db` model. Re-target only the genuine deltas below.
+
+| Feature | v2 coverage | Real remaining delta | Apply the fork patch? |
+|---|---|---|---|
+| **U1 voice** | PARTIAL ~60% — U1-core (`src/transcription.ts`, `scripts/whisper_transcribe.py`, OpenAI `whisper-1` fallback, tests) **already in v2-migration tree** (commit `9af8666`). Adapter hook absent. | **~12–18 LOC** adapter edit | No (targets old class adapter) |
+| **U2 image** | PARTIAL ~70% — v2 `downloadInboundMedia` already downloads+persists+captions+surfaces images. No resize; different marker. | optional ~10 LOC (sharp resize) — **fidelity only** | No |
+| **U2 sticker** | PARTIAL ~40% — `stickerMessage` absent from `downloadInboundMedia` → **sticker-only messages are silently dropped** at the empty-content skip. The one real functional gap. | **~1 LOC** (add `stickerMessage` to the media list) for parity; +~15 LOC for webp→png | No |
+| **F6 reactions — outbound** | **EXISTS-NATIVELY ~100%** — `add_reaction` MCP tool (`container/agent-runner/src/mcp-tools/core.ts:222-263`), `getMessageIdBySeq` (`db/messages-out.ts:90-113`, resolves inbound ids too), delivery passthrough (`src/delivery.ts:356-363`), adapter `operation:'reaction'` branch (`whatsapp.ts:817-829`). Works across all channels, cleaner than v1. | **none** | No — would duplicate `add_reaction` |
+| **F6 reactions — inbound** | **DOES-NOT-EXIST 0%** — no `messages.reaction` listener (adapter has only 4 `sock.ev.on`), no reactions table in any migration. User reactions are silently dropped. | **~90–120 LOC**: `src/db/migrations/017-reactions.ts` + `src/db/reactions.ts` (`storeReaction`, central `data/v2.db`), `messages.reaction` listener after the upsert handler (`whatsapp.ts:~760`), and a **net-new `onReaction` host callback** on the channel-adapter setup contract (`channel-registry.ts` + host wiring) — surface the F6 patch doesn't account for. | No (re-home onto v2 migration/adapter-callback model) |
+
+**Per-feature notes worth keeping:**
+- **U1:** config is identical to v1 (local faster-whisper, model `base`, `WHISPER_MODEL`/`WHISPER_PYTHON` overrides, 60s timeout → OpenAI `whisper-1` fallback → `[Voice Message - transcription unavailable]`). Decision for Noam: in v2 a voice note already downloads as an `.ogg` attachment, so after adding the transcript hook the agent gets transcript **and** the audio file; optionally skip the audio download when `ptt === true` to keep voice-as-text-only like v1.
+- **U2:** correction to the U2 spec — **neither v1 nor v2 injects base64 vision blocks**; both surface attachments as a file-path marker the agent opens with its Read tool (`container/agent-runner/src/providers/claude.ts:72,88` is string-only). So dropping `src/image.ts`/`parseImageReferences` loses no vision capability. Keep v2's `isSafeAttachmentName` traversal guard. v2 paths are session-scoped (`DATA_DIR/attachments`), not v1's `GROUPS_DIR/<folder>/attachments` — use v2's.
+- **F6:** `reactToLatestMessage` ("react to latest, no `messageId`") has no v2 equivalent — `add_reaction` requires a `messageId`. Add only if Noam wants it; not required for core reactions. The four `getReactions*` read paths have 0 call sites — port only `storeReaction` unless a consumer skill is in scope.
+
+**Revised Batch-1 effort:** far smaller than the fork-port track implied. U1 ≈ 15 LOC, U2 ≈ 1–25 LOC, F6 ≈ inbound-only ~100 LOC (outbound free). The expensive shared pieces (transcription core, image download/persist, the entire outbound-reaction pipeline) are already done in v2.
+
