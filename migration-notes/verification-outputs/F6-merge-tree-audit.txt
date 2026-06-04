@@ -1,0 +1,46 @@
+=== COMMAND ===
+git merge-tree --write-tree whatsapp-fork/main a23e372
+=== EXIT CODE ===
+1
+=== STDOUT ===
+658c5328d0a91812c2c3bdc628bc5b3bbace7e5b
+100644 9de0138a0815c5940df760c8c1b61167403c2944 1	container/agent-runner/src/ipc-mcp-stdio.ts
+100644 fb429ed36f72426cf60b1a48c13889603e79b678 2	container/agent-runner/src/ipc-mcp-stdio.ts
+100644 042d80961eb7889470b88774df468ebb418b9ed2 3	container/agent-runner/src/ipc-mcp-stdio.ts
+100644 887ca242035637fababb31dd9bd7fabe977d9d17 2	src/channels/whatsapp.test.ts
+100644 f332811bb639212ffbbd1bcdcbe33967f467e0e8 3	src/channels/whatsapp.test.ts
+100644 992b536e836c18bb0924e22c6bf4825cf4a98c4f 2	src/channels/whatsapp.ts
+100644 f718ee40972a72be519898fc4195de7e96bc5fcb 3	src/channels/whatsapp.ts
+100644 a40d37671e777ccbda802b1364a0cce7143e5f34 1	src/db.test.ts
+100644 e10db20798d0ab2bee173c43b6a7f17cbbcd66f7 2	src/db.test.ts
+100644 0732542dba74dd8375dd507a8472ff6bb0396f8a 3	src/db.test.ts
+100644 0896f418526899a10f678172c69ba9066ce8f1ff 1	src/db.ts
+100644 c03fb4ffb411647e6adebab3ba2a22c4d1e74ed4 2	src/db.ts
+100644 5200c9f087a439a0a8bf98e5f6333175531fc215 3	src/db.ts
+100644 c35261ed966c418afb1cf8324edcab9611661062 1	src/index.ts
+100644 a6b74cf44a9576c9d1dcc65e3f39a7362a373bb4 2	src/index.ts
+100644 d2fc591ae4330cc37ef43b2f7806dbb9cacced52 3	src/index.ts
+100644 7a972c0381be5dc4cbe3d61834881fb47033d43a 1	src/ipc.ts
+100644 e171671103099dfb33a5998173bec905848699cd 2	src/ipc.ts
+100644 468109221df507334c89632f8f029aa877e7c555 3	src/ipc.ts
+
+Auto-merging container/agent-runner/src/ipc-mcp-stdio.ts
+CONFLICT (content): Merge conflict in container/agent-runner/src/ipc-mcp-stdio.ts
+Auto-merging src/channels/whatsapp.test.ts
+CONFLICT (add/add): Merge conflict in src/channels/whatsapp.test.ts
+Auto-merging src/channels/whatsapp.ts
+CONFLICT (add/add): Merge conflict in src/channels/whatsapp.ts
+Auto-merging src/db.test.ts
+CONFLICT (content): Merge conflict in src/db.test.ts
+Auto-merging src/db.ts
+CONFLICT (content): Merge conflict in src/db.ts
+Auto-merging src/group-queue.test.ts
+Auto-merging src/group-queue.ts
+Auto-merging src/index.ts
+CONFLICT (content): Merge conflict in src/index.ts
+Auto-merging src/ipc-auth.test.ts
+Auto-merging src/ipc.ts
+CONFLICT (content): Merge conflict in src/ipc.ts
+Auto-merging src/types.ts
+=== STDERR ===
+=== GIT STATUS --PORCELAIN ===
