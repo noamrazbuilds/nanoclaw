@@ -1,0 +1,584 @@
+diff --git a/container/agent-runner/src/ipc-mcp-stdio.ts b/container/agent-runner/src/ipc-mcp-stdio.ts
+index fb429ed..5947415 100644
+--- a/container/agent-runner/src/ipc-mcp-stdio.ts
++++ b/container/agent-runner/src/ipc-mcp-stdio.ts
+@@ -67,6 +67,40 @@ server.tool(
+   },
+ );
+ 
++server.tool(
++  'react_to_message',
++  'React to a message with an emoji. Omit message_id to react to the most recent message in the chat.',
++  {
++    emoji: z
++      .string()
++      .describe('The emoji to react with (e.g. "👍", "❤️", "🔥")'),
++    message_id: z
++      .string()
++      .optional()
++      .describe(
++        'The message ID to react to. If omitted, reacts to the latest message in the chat.',
++      ),
++  },
++  async (args) => {
++    const data: Record<string, string | undefined> = {
++      type: 'reaction',
++      chatJid,
++      emoji: args.emoji,
++      messageId: args.message_id || undefined,
++      groupFolder,
++      timestamp: new Date().toISOString(),
++    };
++
++    writeIpcFile(MESSAGES_DIR, data);
++
++    return {
++      content: [
++        { type: 'text' as const, text: `Reaction ${args.emoji} sent.` },
++      ],
++    };
++  },
++);
++
+ server.tool(
+   'schedule_task',
+   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
+diff --git a/container/skills/reactions/SKILL.md b/container/skills/reactions/SKILL.md
+new file mode 100644
+index 0000000..4d8eeec
+--- /dev/null
++++ b/container/skills/reactions/SKILL.md
+@@ -0,0 +1,63 @@
++---
++name: reactions
++description: React to WhatsApp messages with emoji. Use when the user asks you to react, when acknowledging a message with a reaction makes sense, or when you want to express a quick response without sending a full message.
++---
++
++# Reactions
++
++React to messages with emoji using the `mcp__nanoclaw__react_to_message` tool.
++
++## When to use
++
++- User explicitly asks you to react ("react with a thumbs up", "heart that message")
++- Quick acknowledgment is more appropriate than a full text reply
++- Expressing agreement, approval, or emotion about a specific message
++
++## How to use
++
++### React to the latest message
++
++```
++mcp__nanoclaw__react_to_message(emoji: "👍")
++```
++
++Omitting `message_id` reacts to the most recent message in the chat.
++
++### React to a specific message
++
++```
++mcp__nanoclaw__react_to_message(emoji: "❤️", message_id: "3EB0F4C9E7...")
++```
++
++Pass a `message_id` to react to a specific message. You can find message IDs by querying the messages database:
++
++```bash
++sqlite3 /workspace/project/store/messages.db "
++  SELECT id, sender_name, substr(content, 1, 80), timestamp
++  FROM messages
++  WHERE chat_jid = '<chat_jid>'
++  ORDER BY timestamp DESC
++  LIMIT 5;
++"
++```
++
++### Remove a reaction
++
++Send an empty string to remove your reaction:
++
++```
++mcp__nanoclaw__react_to_message(emoji: "")
++```
++
++## Common emoji
++
++| Emoji | When to use |
++|-------|-------------|
++| 👍 | Acknowledgment, approval |
++| ❤️ | Appreciation, love |
++| 😂 | Something funny |
++| 🔥 | Impressive, exciting |
++| 🎉 | Celebration, congrats |
++| 🙏 | Thanks, prayer |
++| ✅ | Task done, confirmed |
++| ❓ | Needs clarification |
+diff --git a/scripts/migrate-reactions.ts b/scripts/migrate-reactions.ts
+new file mode 100644
+index 0000000..8dec46e
+--- /dev/null
++++ b/scripts/migrate-reactions.ts
+@@ -0,0 +1,57 @@
++// Database migration script for reactions table
++// Run: npx tsx scripts/migrate-reactions.ts
++
++import Database from 'better-sqlite3';
++import path from 'path';
++import { fileURLToPath } from 'url';
++
++const __dirname = path.dirname(fileURLToPath(import.meta.url));
++const STORE_DIR = process.env.STORE_DIR || path.join(process.cwd(), 'store');
++const dbPath = path.join(STORE_DIR, 'messages.db');
++
++console.log(`Migrating database at: ${dbPath}`);
++
++const db = new Database(dbPath);
++
++try {
++  db.transaction(() => {
++    db.exec(`
++      CREATE TABLE IF NOT EXISTS reactions (
++        message_id TEXT NOT NULL,
++        message_chat_jid TEXT NOT NULL,
++        reactor_jid TEXT NOT NULL,
++        reactor_name TEXT,
++        emoji TEXT NOT NULL,
++        timestamp TEXT NOT NULL,
++        PRIMARY KEY (message_id, message_chat_jid, reactor_jid)
++      );
++    `);
++
++    console.log('Created reactions table');
++
++    db.exec(`
++      CREATE INDEX IF NOT EXISTS idx_reactions_message ON reactions(message_id, message_chat_jid);
++      CREATE INDEX IF NOT EXISTS idx_reactions_reactor ON reactions(reactor_jid);
++      CREATE INDEX IF NOT EXISTS idx_reactions_emoji ON reactions(emoji);
++      CREATE INDEX IF NOT EXISTS idx_reactions_timestamp ON reactions(timestamp);
++    `);
++
++    console.log('Created indexes');
++  })();
++
++  const tableInfo = db.prepare(`PRAGMA table_info(reactions)`).all();
++  console.log('\nReactions table schema:');
++  console.table(tableInfo);
++
++  const count = db.prepare(`SELECT COUNT(*) as count FROM reactions`).get() as {
++    count: number;
++  };
++  console.log(`\nCurrent reaction count: ${count.count}`);
++
++  console.log('\nMigration complete!');
++} catch (err) {
++  console.error('Migration failed:', err);
++  process.exit(1);
++} finally {
++  db.close();
++}
+diff --git a/src/channels/whatsapp.ts b/src/channels/whatsapp.ts
+index 992b536..806b725 100644
+--- a/src/channels/whatsapp.ts
++++ b/src/channels/whatsapp.ts
+@@ -30,8 +30,10 @@ import {
+ } from '../config.js';
+ import {
+   getLastGroupSync,
++  getLatestMessage,
+   getMessageContentById,
+   setLastGroupSync,
++  storeReaction,
+   updateChatName,
+ } from '../db.js';
+ import { logger } from '../logger.js';
+@@ -342,6 +344,46 @@ export class WhatsAppChannel implements Channel {
+         }
+       }
+     });
++
++    // Listen for message reactions
++    this.sock.ev.on('messages.reaction', async (reactions) => {
++      for (const { key, reaction } of reactions) {
++        try {
++          const messageId = key.id;
++          if (!messageId) continue;
++          const rawChatJid = key.remoteJid;
++          if (!rawChatJid || rawChatJid === 'status@broadcast') continue;
++          const chatJid = await this.translateJid(rawChatJid);
++          const groups = this.opts.registeredGroups();
++          if (!groups[chatJid]) continue;
++          const reactorJid =
++            reaction.key?.participant || reaction.key?.remoteJid || '';
++          const emoji = reaction.text || '';
++          const timestamp = reaction.senderTimestampMs
++            ? new Date(Number(reaction.senderTimestampMs)).toISOString()
++            : new Date().toISOString();
++          storeReaction({
++            message_id: messageId,
++            message_chat_jid: chatJid,
++            reactor_jid: reactorJid,
++            reactor_name: reactorJid.split('@')[0],
++            emoji,
++            timestamp,
++          });
++          logger.info(
++            {
++              chatJid,
++              messageId: messageId.slice(0, 10) + '...',
++              reactor: reactorJid.split('@')[0],
++              emoji: emoji || '(removed)',
++            },
++            emoji ? 'Reaction added' : 'Reaction removed',
++          );
++        } catch (err) {
++          logger.error({ err }, 'Failed to process reaction');
++        }
++      }
++    });
+   }
+ 
+   async sendMessage(jid: string, text: string): Promise<void> {
+@@ -382,6 +424,51 @@ export class WhatsAppChannel implements Channel {
+     }
+   }
+ 
++  async sendReaction(
++    chatJid: string,
++    messageKey: {
++      id: string;
++      remoteJid: string;
++      fromMe?: boolean;
++      participant?: string;
++    },
++    emoji: string,
++  ): Promise<void> {
++    if (!this.connected) {
++      logger.warn({ chatJid, emoji }, 'Cannot send reaction - not connected');
++      throw new Error('Not connected to WhatsApp');
++    }
++    try {
++      await this.sock.sendMessage(chatJid, {
++        react: { text: emoji, key: messageKey },
++      });
++      logger.info(
++        {
++          chatJid,
++          messageId: messageKey.id?.slice(0, 10) + '...',
++          emoji: emoji || '(removed)',
++        },
++        emoji ? 'Reaction sent' : 'Reaction removed',
++      );
++    } catch (err) {
++      logger.error({ chatJid, emoji, err }, 'Failed to send reaction');
++      throw err;
++    }
++  }
++
++  async reactToLatestMessage(chatJid: string, emoji: string): Promise<void> {
++    const latest = getLatestMessage(chatJid);
++    if (!latest) {
++      throw new Error(`No messages found for chat ${chatJid}`);
++    }
++    const messageKey = {
++      id: latest.id,
++      remoteJid: chatJid,
++      fromMe: latest.fromMe,
++    };
++    await this.sendReaction(chatJid, messageKey, emoji);
++  }
++
+   isConnected(): boolean {
+     return this.connected;
+   }
+diff --git a/src/db.ts b/src/db.ts
+index c03fb4f..95f5bbf 100644
+--- a/src/db.ts
++++ b/src/db.ts
+@@ -14,6 +14,15 @@ import {
+ 
+ let db: Database.Database;
+ 
++export interface Reaction {
++  message_id: string;
++  message_chat_jid: string;
++  reactor_jid: string;
++  reactor_name?: string;
++  emoji: string;
++  timestamp: string;
++}
++
+ function createSchema(database: Database.Database): void {
+   database.exec(`
+     CREATE TABLE IF NOT EXISTS chats (
+@@ -37,6 +46,20 @@ function createSchema(database: Database.Database): void {
+     );
+     CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp);
+ 
++    CREATE TABLE IF NOT EXISTS reactions (
++      message_id TEXT NOT NULL,
++      message_chat_jid TEXT NOT NULL,
++      reactor_jid TEXT NOT NULL,
++      reactor_name TEXT,
++      emoji TEXT NOT NULL,
++      timestamp TEXT NOT NULL,
++      PRIMARY KEY (message_id, message_chat_jid, reactor_jid)
++    );
++    CREATE INDEX IF NOT EXISTS idx_reactions_message ON reactions(message_id, message_chat_jid);
++    CREATE INDEX IF NOT EXISTS idx_reactions_reactor ON reactions(reactor_jid);
++    CREATE INDEX IF NOT EXISTS idx_reactions_emoji ON reactions(emoji);
++    CREATE INDEX IF NOT EXISTS idx_reactions_timestamp ON reactions(timestamp);
++
+     CREATE TABLE IF NOT EXISTS scheduled_tasks (
+       id TEXT PRIMARY KEY,
+       group_folder TEXT NOT NULL,
+@@ -418,6 +441,130 @@ export function getMessageContentById(
+   return row?.content;
+ }
+ 
++export function getLatestMessage(
++  chatJid: string,
++): { id: string; fromMe: boolean } | undefined {
++  const row = db
++    .prepare(
++      `SELECT id, is_from_me FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT 1`,
++    )
++    .get(chatJid) as { id: string; is_from_me: number | null } | undefined;
++  if (!row) return undefined;
++  return { id: row.id, fromMe: row.is_from_me === 1 };
++}
++
++export function getMessageFromMe(messageId: string, chatJid: string): boolean {
++  const row = db
++    .prepare(
++      `SELECT is_from_me FROM messages WHERE id = ? AND chat_jid = ? LIMIT 1`,
++    )
++    .get(messageId, chatJid) as { is_from_me: number | null } | undefined;
++  return row?.is_from_me === 1;
++}
++
++export function storeReaction(reaction: Reaction): void {
++  if (!reaction.emoji) {
++    db.prepare(
++      `DELETE FROM reactions WHERE message_id = ? AND message_chat_jid = ? AND reactor_jid = ?`,
++    ).run(
++      reaction.message_id,
++      reaction.message_chat_jid,
++      reaction.reactor_jid,
++    );
++    return;
++  }
++  db.prepare(
++    `INSERT OR REPLACE INTO reactions (message_id, message_chat_jid, reactor_jid, reactor_name, emoji, timestamp)
++     VALUES (?, ?, ?, ?, ?, ?)`,
++  ).run(
++    reaction.message_id,
++    reaction.message_chat_jid,
++    reaction.reactor_jid,
++    reaction.reactor_name || null,
++    reaction.emoji,
++    reaction.timestamp,
++  );
++}
++
++export function getReactionsForMessage(
++  messageId: string,
++  chatJid: string,
++): Reaction[] {
++  return db
++    .prepare(
++      `SELECT * FROM reactions WHERE message_id = ? AND message_chat_jid = ? ORDER BY timestamp`,
++    )
++    .all(messageId, chatJid) as Reaction[];
++}
++
++export function getMessagesByReaction(
++  reactorJid: string,
++  emoji: string,
++  chatJid?: string,
++): Array<
++  Reaction & { content: string; sender_name: string; message_timestamp: string }
++> {
++  const sql = chatJid
++    ? `
++      SELECT r.*, m.content, m.sender_name, m.timestamp as message_timestamp
++      FROM reactions r
++      JOIN messages m ON r.message_id = m.id AND r.message_chat_jid = m.chat_jid
++      WHERE r.reactor_jid = ? AND r.emoji = ? AND r.message_chat_jid = ?
++      ORDER BY r.timestamp DESC
++    `
++    : `
++      SELECT r.*, m.content, m.sender_name, m.timestamp as message_timestamp
++      FROM reactions r
++      JOIN messages m ON r.message_id = m.id AND r.message_chat_jid = m.chat_jid
++      WHERE r.reactor_jid = ? AND r.emoji = ?
++      ORDER BY r.timestamp DESC
++    `;
++
++  type Result = Reaction & {
++    content: string;
++    sender_name: string;
++    message_timestamp: string;
++  };
++  return chatJid
++    ? (db.prepare(sql).all(reactorJid, emoji, chatJid) as Result[])
++    : (db.prepare(sql).all(reactorJid, emoji) as Result[]);
++}
++
++export function getReactionsByUser(
++  reactorJid: string,
++  limit: number = 50,
++): Reaction[] {
++  return db
++    .prepare(
++      `SELECT * FROM reactions WHERE reactor_jid = ? ORDER BY timestamp DESC LIMIT ?`,
++    )
++    .all(reactorJid, limit) as Reaction[];
++}
++
++export function getReactionStats(
++  chatJid?: string,
++): Array<{ emoji: string; count: number }> {
++  const sql = chatJid
++    ? `
++      SELECT emoji, COUNT(*) as count
++      FROM reactions
++      WHERE message_chat_jid = ?
++      GROUP BY emoji
++      ORDER BY count DESC
++    `
++    : `
++      SELECT emoji, COUNT(*) as count
++      FROM reactions
++      GROUP BY emoji
++      ORDER BY count DESC
++    `;
++
++  type Result = { emoji: string; count: number };
++  return chatJid
++    ? (db.prepare(sql).all(chatJid) as Result[])
++    : (db.prepare(sql).all() as Result[]);
++}
++
+ export function createTask(
+   task: Omit<ScheduledTask, 'last_run' | 'last_result'>,
+ ): void {
+diff --git a/src/index.ts b/src/index.ts
+index a6b74cf..0ee2871 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -36,6 +36,7 @@ import {
+   deleteSession,
+   getAllTasks,
+   getLastBotMessageTimestamp,
++  getMessageFromMe,
+   getMessagesSince,
+   getNewMessages,
+   getRouterState,
+@@ -717,6 +718,24 @@ async function main(): Promise<void> {
+       if (!channel) throw new Error(`No channel for JID: ${jid}`);
+       return channel.sendMessage(jid, text);
+     },
++    sendReaction: async (jid, emoji, messageId) => {
++      const channel = findChannel(channels, jid);
++      if (!channel) throw new Error(`No channel for JID: ${jid}`);
++      if (messageId) {
++        if (!channel.sendReaction)
++          throw new Error('Channel does not support sendReaction');
++        const messageKey = {
++          id: messageId,
++          remoteJid: jid,
++          fromMe: getMessageFromMe(messageId, jid),
++        };
++        await channel.sendReaction(jid, messageKey, emoji);
++      } else {
++        if (!channel.reactToLatestMessage)
++          throw new Error('Channel does not support reactions');
++        await channel.reactToLatestMessage(jid, emoji);
++      }
++    },
+     registeredGroups: () => registeredGroups,
+     registerGroup,
+     syncGroups: async (force: boolean) => {
+diff --git a/src/ipc.ts b/src/ipc.ts
+index e171671..8967660 100644
+--- a/src/ipc.ts
++++ b/src/ipc.ts
+@@ -12,6 +12,11 @@ import { RegisteredGroup } from './types.js';
+ 
+ export interface IpcDeps {
+   sendMessage: (jid: string, text: string) => Promise<void>;
++  sendReaction?: (
++    jid: string,
++    emoji: string,
++    messageId?: string,
++  ) => Promise<void>;
+   registeredGroups: () => Record<string, RegisteredGroup>;
+   registerGroup: (jid: string, group: RegisteredGroup) => void;
+   syncGroups: (force: boolean) => Promise<void>;
+@@ -92,6 +97,44 @@ export function startIpcWatcher(deps: IpcDeps): void {
+                     'Unauthorized IPC message attempt blocked',
+                   );
+                 }
++              } else if (
++                data.type === 'reaction' &&
++                data.chatJid &&
++                data.emoji &&
++                deps.sendReaction
++              ) {
++                const targetGroup = registeredGroups[data.chatJid];
++                if (
++                  isMain ||
++                  (targetGroup && targetGroup.folder === sourceGroup)
++                ) {
++                  try {
++                    await deps.sendReaction(
++                      data.chatJid,
++                      data.emoji,
++                      data.messageId,
++                    );
++                    logger.info(
++                      { chatJid: data.chatJid, emoji: data.emoji, sourceGroup },
++                      'IPC reaction sent',
++                    );
++                  } catch (err) {
++                    logger.error(
++                      {
++                        chatJid: data.chatJid,
++                        emoji: data.emoji,
++                        sourceGroup,
++                        err,
++                      },
++                      'IPC reaction failed',
++                    );
++                  }
++                } else {
++                  logger.warn(
++                    { chatJid: data.chatJid, sourceGroup },
++                    'Unauthorized IPC reaction attempt blocked',
++                  );
++                }
+               }
+               fs.unlinkSync(filePath);
+             } catch (err) {
+diff --git a/src/types.ts b/src/types.ts
+index 717aff6..50e4ed1 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -95,6 +95,18 @@ export interface Channel {
+   setTyping?(jid: string, isTyping: boolean): Promise<void>;
+   // Optional: sync group/chat names from the platform.
+   syncGroups?(force: boolean): Promise<void>;
++  // Optional: reaction support
++  sendReaction?(
++    chatJid: string,
++    messageKey: {
++      id: string;
++      remoteJid: string;
++      fromMe?: boolean;
++      participant?: string;
++    },
++    emoji: string,
++  ): Promise<void>;
++  reactToLatestMessage?(chatJid: string, emoji: string): Promise<void>;
+ }
+ 
+ // Callback type that channels use to deliver inbound messages

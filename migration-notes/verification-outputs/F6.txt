@@ -1,0 +1,33 @@
+Verifying F6...
+  [OK] porter worktree on branch porter-F6
+  [OK] src/db.ts contains: reactions table
+  [OK] src/db.ts contains: composite PK
+  [OK] src/db.ts contains: Reaction interface
+  [OK] src/db.ts contains: storeReaction
+  [OK] src/db.ts contains: DELETE-on-empty
+  [OK] src/db.ts contains: getLatestMessage
+  [OK] src/db.ts contains: getMessageFromMe
+  [OK] src/channels/whatsapp.ts contains: storeReaction import
+  [OK] src/channels/whatsapp.ts contains: getLatestMessage import
+  [OK] src/channels/whatsapp.ts contains: reaction listener
+  [OK] src/channels/whatsapp.ts contains: sendReaction method
+  [OK] src/channels/whatsapp.ts contains: reactToLatestMessage
+  [OK] src/channels/whatsapp.ts contains: react payload
+  [OK] src/types.ts contains: Channel.sendReaction
+  [OK] src/types.ts contains: Channel.reactToLatestMessage
+  [OK] src/ipc.ts contains: IpcDeps.sendReaction
+  [OK] src/ipc.ts contains: reaction branch
+  [OK] src/index.ts contains: sendReaction wiring
+  [OK] src/index.ts contains: getMessageFromMe import
+  [OK] container/agent-runner/src/ipc-mcp-stdio.ts contains: react_to_message tool
+  [OK] container/agent-runner/src/ipc-mcp-stdio.ts contains: reaction IPC frame
+  [OK] container/skills/reactions/SKILL.md present
+  [OK] scripts/migrate-reactions.ts present
+  [OK] package-lock.json unchanged vs whatsapp-fork/main (no dep drift)
+  [OK] container/agent-runner/package-lock.json unchanged vs whatsapp-fork/main (no dep drift)
+  [..] typechecking host (tsc --noEmit)...
+  [OK] host typecheck clean
+  [..] typechecking container agent-runner (tsc --noEmit)...
+  [OK] container typecheck clean
+
+✓ F6 VERIFIED
