@@ -782,6 +782,40 @@ registerChannelAdapter('whatsapp', {
           }
         }
       });
+
+      // Listen for emoji reactions (added or removed). The host stores these
+      // as session metadata via onReaction — they never wake the agent. An
+      // empty reaction.text means the reactor cleared their reaction.
+      sock.ev.on('messages.reaction', async (reactions) => {
+        if (!setupConfig.onReaction) return;
+        for (const { key, reaction } of reactions) {
+          try {
+            const messageId = key.id;
+            const rawChatJid = key.remoteJid;
+            if (!messageId || !rawChatJid || rawChatJid === 'status@broadcast') {
+              continue;
+            }
+            const chatJid = await translateJid(rawChatJid, key.remoteJidAlt ?? undefined);
+            const rawReactor = reaction.key?.participant || reaction.key?.remoteJid || '';
+            // reaction.key is a protobuf IMessageKey (no participantAlt) — fall
+            // back to translateJid's signal-repository LID→phone resolution.
+            const reactorId = rawReactor.endsWith('@lid') ? await translateJid(rawReactor) : rawReactor;
+            const emoji = reaction.text ?? '';
+            const timestamp = reaction.senderTimestampMs
+              ? new Date(Number(reaction.senderTimestampMs)).toISOString()
+              : new Date().toISOString();
+            await setupConfig.onReaction(chatJid, null, {
+              messageId,
+              reactorId,
+              reactorName: reactorId.split('@')[0] || undefined,
+              emoji,
+              timestamp,
+            });
+          } catch (err) {
+            log.error('Error processing WhatsApp reaction', { err });
+          }
+        }
+      });
     }
 
     // --- ChannelAdapter implementation ---
