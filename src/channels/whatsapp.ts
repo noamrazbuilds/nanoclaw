@@ -435,6 +435,9 @@ registerChannelAdapter('whatsapp', {
         { key: 'videoMessage', type: 'video', ext: '.mp4' },
         { key: 'audioMessage', type: 'audio', ext: '.ogg' },
         { key: 'documentMessage', type: 'document', ext: '' },
+        // Stickers are WebP — Claude vision accepts WebP natively, so no
+        // conversion needed; download + surface them like any other image.
+        { key: 'stickerMessage', type: 'sticker', ext: '.webp' },
       ];
       const results: Array<{ type: string; name: string; localPath: string }> = [];
       for (const { key, type, ext } of mediaTypes) {
