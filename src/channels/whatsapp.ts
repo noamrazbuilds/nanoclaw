@@ -42,6 +42,7 @@ import { isSafeAttachmentName } from '../attachment-safety.js';
 import { ASSISTANT_HAS_OWN_NUMBER, ASSISTANT_NAME, DATA_DIR } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
+import { FALLBACK_MESSAGE, transcribeAudioBuffer } from '../transcription.js';
 import { registerChannelAdapter } from './channel-registry.js';
 import { normalizeOptions, type NormalizedOption } from './ask-question.js';
 import type { ChannelAdapter, ChannelSetup, ConversationInfo, InboundMessage, OutboundMessage } from './adapter.js';
@@ -438,6 +439,9 @@ registerChannelAdapter('whatsapp', {
       const results: Array<{ type: string; name: string; localPath: string }> = [];
       for (const { key, type, ext } of mediaTypes) {
         if (!normalized[key]) continue;
+        // Voice notes (ptt) are transcribed to text in the message handler, not
+        // attached as audio — the agent's Read tool can't interpret audio.
+        if (key === 'audioMessage' && normalized.audioMessage?.ptt) continue;
         try {
           const buffer = await downloadMediaMessage(msg, 'buffer', {});
           // documentMessage.fileName is attacker-controlled and rides through
@@ -674,6 +678,20 @@ registerChannelAdapter('whatsapp', {
             // Normalize bot LID mention → assistant name for trigger matching
             if (botLidUser && content.includes(`@${botLidUser}`)) {
               content = content.replace(`@${botLidUser}`, `@${ASSISTANT_NAME}`);
+            }
+
+            // Transcribe WhatsApp voice notes (ptt) to text. They arrive as
+            // message content, not as an audio attachment (downloadInboundMedia
+            // skips ptt). Local whisper first, OpenAI fallback, then a fixed
+            // placeholder if both fail — see src/transcription.ts.
+            if (!content && normalized.audioMessage?.ptt) {
+              try {
+                const buffer = (await downloadMediaMessage(msg, 'buffer', {})) as Buffer;
+                content = (buffer?.length ? await transcribeAudioBuffer(buffer) : null) ?? FALLBACK_MESSAGE;
+              } catch (err) {
+                log.warn('WhatsApp voice transcription failed', { err });
+                content = FALLBACK_MESSAGE;
+              }
             }
 
             // Download media attachments (images, video, audio, documents)
