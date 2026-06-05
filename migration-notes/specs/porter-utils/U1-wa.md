@@ -1,5 +1,7 @@
 # U1-wa — Voice transcription (WhatsApp fork)
 
+> **✅ DONE — RE-TARGETED onto the v2-native adapter (2026-06-05).** Superseded the fork-port approach below. The committed `whatsapp-fork` port (`migration-notes/patches/U1-wa.patch`) is **behavioral reference only** — it targets the v1-lineage adapter that can't compile in v2 (see `migration-notes/batch1-fork-to-v2-integration-gap.md`). The actual deliverable is on **`origin/channels` @ `86646b5`**: a ~26-LOC transcription hook in `src/channels/whatsapp.ts` (the v2-native adapter) calling the already-in-v2 `src/transcription.ts` (U1-core, commit `9af8666`). Decision (Noam, 2026-06-05): voice notes are **text-only** — `downloadInboundMedia` skips `ptt`, so the note arrives as transcript content, not also as an unusable `.ogg` attachment; non-`ptt` audio files still attach. Validated: `whatsapp.ts` + `transcription.ts` typecheck clean against the v2 adapter (other-channel adapter errors on the branch are pre-existing and unrelated). The sections below describe the now-superseded fork-port mechanism and remain as the behavioral spec.
+
 Sub-component of U1 (see `U1.md`). Scope: WhatsApp adapter voice-message inbound handling. Lands in `noamrazbuilds/nanoclaw-whatsapp` (`whatsapp-fork`), not in `nanoclaw-v2`.
 
 - **mechanism:** intent-port

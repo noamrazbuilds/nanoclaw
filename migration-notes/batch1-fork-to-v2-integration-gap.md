@@ -66,7 +66,7 @@ Run 2026-06-04 (three independent read-only passes). Headline: **the v2 adapter 
 
 | Feature | v2 coverage | Real remaining delta | Apply the fork patch? |
 |---|---|---|---|
-| **U1 voice** | PARTIAL ~60% — U1-core (`src/transcription.ts`, `scripts/whisper_transcribe.py`, OpenAI `whisper-1` fallback, tests) **already in v2-migration tree** (commit `9af8666`). Adapter hook absent. | **~12–18 LOC** adapter edit | No (targets old class adapter) |
+| **U1 voice** | ✅ **DONE** (`origin/channels` @ `86646b5`, 2026-06-05) — U1-core already in v2 (commit `9af8666`); the ~26-LOC adapter hook (transcribe `ptt`, skip its attachment) re-targeted onto the v2-native adapter. Text-only decision. Validated by typecheck. | done | No (targeted old class adapter) |
 | **U2 image** | PARTIAL ~70% — v2 `downloadInboundMedia` already downloads+persists+captions+surfaces images. No resize; different marker. | optional ~10 LOC (sharp resize) — **fidelity only** | No |
 | **U2 sticker** | PARTIAL ~40% — `stickerMessage` absent from `downloadInboundMedia` → **sticker-only messages are silently dropped** at the empty-content skip. The one real functional gap. | **~1 LOC** (add `stickerMessage` to the media list) for parity; +~15 LOC for webp→png | No |
 | **F6 reactions — outbound** | **EXISTS-NATIVELY ~100%** — `add_reaction` MCP tool (`container/agent-runner/src/mcp-tools/core.ts:222-263`), `getMessageIdBySeq` (`db/messages-out.ts:90-113`, resolves inbound ids too), delivery passthrough (`src/delivery.ts:356-363`), adapter `operation:'reaction'` branch (`whatsapp.ts:817-829`). Works across all channels, cleaner than v1. | **none** | No — would duplicate `add_reaction` |
