@@ -19,6 +19,7 @@ import {
   type Message as ChatMessage,
 } from 'chat';
 import { log } from '../log.js';
+import { FALLBACK_MESSAGE, transcribeAudioBuffer } from '../transcription.js';
 import { SqliteStateAdapter } from '../state-sqlite.js';
 import { registerWebhookAdapter } from '../webhook-server.js';
 import { getAskQuestionRender } from '../db/sessions.js';
@@ -135,10 +136,29 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const serialized = message.toJSON() as Record<string, any>;
 
-    // Download attachment data before serialization loses fetchData()
+    // Download attachment data before serialization loses fetchData(). Audio
+    // attachments (e.g. Telegram voice notes, which @chat-adapter/telegram
+    // surfaces as type:'audio') are transcribed to text rather than surfaced as
+    // files the agent's Read tool can't interpret — mirroring the WhatsApp
+    // native path. This is the shared inbound seam for every Chat-SDK channel
+    // (Telegram, Slack, Discord, Teams, …), so voice transcription is enabled
+    // for all of them at once.
+    const AUDIO_MAX_BYTES = 25 * 1024 * 1024; // OpenAI Whisper limit; oversized audio falls through as a file
+    const transcripts: string[] = [];
     if (message.attachments && message.attachments.length > 0) {
       const enriched = [];
       for (const att of message.attachments) {
+        if (att.type === 'audio' && att.fetchData && (!att.size || att.size <= AUDIO_MAX_BYTES)) {
+          try {
+            const buffer = await att.fetchData();
+            transcripts.push((buffer?.length ? await transcribeAudioBuffer(buffer) : null) ?? FALLBACK_MESSAGE);
+            continue; // drop the audio attachment — delivered as transcript text
+          } catch (err) {
+            log.warn('Failed to transcribe inbound audio attachment', { type: att.type, err });
+            transcripts.push(FALLBACK_MESSAGE);
+            continue;
+          }
+        }
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const entry: Record<string, any> = {
           type: att.type,
@@ -159,6 +179,16 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         enriched.push(entry);
       }
       serialized.attachments = enriched;
+    }
+
+    // Fold any voice transcripts into the message text so the agent reads them
+    // as ordinary content (text-only, like the WhatsApp voice path).
+    if (transcripts.length > 0) {
+      const existing = typeof serialized.text === 'string' ? serialized.text : '';
+      serialized.text = [existing, ...transcripts]
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .join('\n');
     }
 
     // Extract reply context via platform-specific hook

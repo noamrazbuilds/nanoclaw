@@ -95,3 +95,14 @@ All Batch-1 WhatsApp rows are re-targeted onto the v2-native adapter and verifie
 
 **Not yet done (cutover-time):** live smoke-test in a registered chat (text/image/sticker/voice note/reaction round-trip); and the optional reactions "consumption" affordance (inline-surfacing or a `get_reactions` read tool — F6 open item). `origin/channels` is NOT yet merged into the fork's `main` (it stays on the `channels` branch, consumed by `/add-whatsapp`).
 
+### ✅ Batch 2 — Telegram (2026-06-06)
+
+**Architecture finding:** v2's Telegram is a **Chat-SDK-bridge** adapter (`@chat-adapter/telegram@4.27.0` + `createChatSdkBridge`), NOT native grammY. This invalidated the grammY-based mechanism in both the U1-TG and CH2 specs.
+
+| Row | Verdict | Where |
+|-----|---------|-------|
+| CH2 (photo/voice/doc download) | ✅ **EXISTS-NATIVELY** — `@chat-adapter/telegram extractAttachments` maps photo→image, voice/audio→audio, video→video, doc→file (each `fetchData()`); shared `chat-sdk-bridge.ts messageToInbound` downloads all generically. v1's ~133 LOC per-handler ports are redundant. No port. | (native) |
+| U1-TG voice transcription | ✅ **DONE** — gauntlet-decided **Option A**: transcribe `audio` attachments at the shared bridge seam (`chat-sdk-bridge.ts`, core), fold transcript into text, drop the audio attachment (text-only, 25 MB guard, `FALLBACK_MESSAGE` on failure). **Enables voice transcription for ALL Chat-SDK channels** (Telegram/Slack/Discord/Teams). Core-only; no `channels`-branch edit. | `v2-migration` |
+
+Verified (package inspection): `@chat-adapter/telegram` `createAttachment` wires `fetchData: () => downloadFile(fileId)`, and `voice`→`type:'audio'`. Validated: `tsc` clean + 325/325 host tests. Note: this is a **shared-core change** — the gauntlet (Opus+GPT-4o; Gemini 429'd) and my own analysis agreed the generic seam is right (DRY, symmetric with WhatsApp's transcribe-at-seam). Cutover-time: live Telegram voice smoke; consider whether Slack/Discord voice transcription (now also on) is desired (it's opt-in by audio presence, harmless if unused).
+

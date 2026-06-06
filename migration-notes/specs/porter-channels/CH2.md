@@ -1,5 +1,7 @@
 # CH2 — Telegram channel orchestration
 
+> **✅ DONE — mostly EXISTS-NATIVELY (2026-06-06).** v2's Telegram is a **Chat-SDK-bridge** adapter, not native grammY — so the merge plan below (port v1's per-handler grammY downloads) is superseded. `@chat-adapter/telegram@4.27.0` `extractAttachments` maps photo→`image`, voice/audio→`audio`, video→`video`, document→`file` (each with `fetchData()`), and the shared `chat-sdk-bridge.ts messageToInbound` downloads them all generically (base64 → inbound → host extracts to the session inbox). So v1's ~133 LOC of photo/voice/document inline-download handlers are **redundant** in v2 — no port. The only real gap was **voice transcription**, handled under U1-TG (transcribe `audio` attachments at the shared bridge seam). Sticker handling is in the Chat-SDK adapter. Marker format differs (v1 inline `[Photo: …]` vs v2 attachment array + formatter marker — same as U2). Remaining (cutover-time): live smoke (photo/voice/document/sticker/@mention) + optional document-filename hardening if the Chat-SDK adapter doesn't already sanitize. Sections below = superseded merge plan.
+
 ## Source (v1)
 - v1 fork's Telegram adapter: `docs/v1-fork-reference/src/channels/telegram.ts` (437 LOC).
 - Key handlers: photo (lines 298-339, downloads), voice (341-378, downloads + transcribes), document (380+, downloads), audio/video/sticker/location/contact (placeholders).

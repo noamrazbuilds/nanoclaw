@@ -1,5 +1,7 @@
 # U1-tg — Voice transcription (Telegram fork)
 
+> **✅ DONE — REIMPLEMENTED on v2 architecture (2026-06-06).** The fork port (`migration-notes/patches/U1-tg.patch`) is **behavioral reference only** — NOT applied. v2's Telegram is a **Chat-SDK-bridge** adapter (`@chat-adapter/telegram@4.27.0` + `createChatSdkBridge`), not native grammY, so the spec's `bot.on('message:voice')` hook doesn't exist. Decided via `/gauntlet` (`gauntlet-logs/gauntlet-2026-06-06-200159.md`): transcribe **generically at the shared inbound seam** — `src/channels/chat-sdk-bridge.ts` `messageToInbound` — rather than per-Telegram. `@chat-adapter/telegram` surfaces a voice note as a `type:'audio'` attachment with `fetchData()` (verified by inspecting the package); the bridge now transcribes any `audio` attachment via core `src/transcription.ts`, folds the transcript into message text, and drops the audio attachment (text-only, like WhatsApp). 25 MB guard; failure → `FALLBACK_MESSAGE`. **This enables voice transcription for ALL Chat-SDK channels** (Telegram, Slack, Discord, Teams, …) — a strict, opt-in-by-audio-presence improvement. Core-only change on `v2-migration` (`054a45e`+); no `channels`-branch edit. Validated: `tsc` clean + 325/325 tests. Sections below = superseded fork-port spec.
+
 Sub-component of U1 (see `U1.md`). Scope: Telegram adapter voice-message inbound handling. Lands in `noamrazbuilds/nanoclaw-telegram` (`telegram-fork`), not in `nanoclaw-v2`.
 
 - **mechanism:** intent-port
