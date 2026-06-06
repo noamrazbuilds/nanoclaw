@@ -1,5 +1,7 @@
 # CH1 — WhatsApp channel orchestration
 
+> **✅ DONE (2026-06-06).** The merge-skill-branches plan below is superseded by the re-target-onto-v2-adapter mechanism (`migration-notes/batch1-fork-to-v2-integration-gap.md`). CH1's outcome — a working v2 WhatsApp adapter assembling U1 (voice), U2 (image/sticker), F6 (reactions) on top of upstream-native text/LID/prefix/bot-detection — is achieved on `origin/channels` (@ `f1070f4`) + v2 core. **Closeout verification (the deferred Phase-0 exit criterion):** a clean `/add-whatsapp` into a fresh `v2-migration` checkout (fetch adapter+auth+groups from `origin/channels`, wire the barrel, install pinned deps `@whiskeysockets/baileys@7.0.0-rc.9 qrcode@1.5.4 @types/qrcode@1.5.6 pino@9.6.0`) + full `pnpm run build` → **exit 0**, and `dist/channels/whatsapp.js` contains all three feature paths (`messages.reaction`, `transcribeAudioBuffer`, `stickerMessage`). Native LID/prefix/bot-detection confirmed in the upstream base. Remaining (not blocking): live smoke-test in a registered chat (text/image/sticker/voice/reaction) at cutover. Sections below are the superseded merge plan.
+
 ## Source (v1)
 - v1 fork's WhatsApp adapter: `docs/v1-fork-reference/src/channels/whatsapp.ts` (multi-feature, multi-author file).
 - Decomposed scope across leaf specs (CH1 is orchestration, not new behavior):

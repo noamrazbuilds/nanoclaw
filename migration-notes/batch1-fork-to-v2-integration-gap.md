@@ -79,3 +79,19 @@ Run 2026-06-04 (three independent read-only passes). Headline: **the v2 adapter 
 
 **Revised Batch-1 effort:** far smaller than the fork-port track implied. U1 ≈ 15 LOC, U2 ≈ 1–25 LOC, F6 ≈ inbound-only ~100 LOC (outbound free). The expensive shared pieces (transcription core, image download/persist, the entire outbound-reaction pipeline) are already done in v2.
 
+### ✅ Batch 1 COMPLETE (2026-06-06)
+
+All Batch-1 WhatsApp rows are re-targeted onto the v2-native adapter and verified:
+
+| Row | Status | Where |
+|-----|--------|-------|
+| U1 voice | ✅ | `origin/channels` @ `86646b5` |
+| U2 image/sticker | ✅ | `origin/channels` @ `a167d33` |
+| F6 reactions (in+out) | ✅ | core on `v2-migration` (`054a45e`) + adapter `origin/channels` @ `f1070f4` |
+| CH1 orchestration | ✅ | assembled adapter; closeout below |
+| CH3 whatsapp-auth | ✅ | upstream version canonical (verification only) |
+
+**CH1 closeout (deferred Phase-0 exit criterion):** clean `/add-whatsapp` into a fresh `v2-migration` checkout + full `pnpm run build` → **exit 0**; `dist/channels/whatsapp.js` contains all three feature paths (`messages.reaction`, `transcribeAudioBuffer`, `stickerMessage`). The whole assembled adapter compiles in a real v2 install. Host suite: **325/325 pass**.
+
+**Not yet done (cutover-time):** live smoke-test in a registered chat (text/image/sticker/voice note/reaction round-trip); and the optional reactions "consumption" affordance (inline-surfacing or a `get_reactions` read tool — F6 open item). `origin/channels` is NOT yet merged into the fork's `main` (it stays on the `channels` branch, consumed by `/add-whatsapp`).
+
