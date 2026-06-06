@@ -29,11 +29,11 @@ import {
 import { findSessionForAgent } from './db/sessions.js';
 import { startTypingRefresh, stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
-import { resolveSession, writeSessionMessage, writeOutboundDirect } from './session-manager.js';
+import { resolveSession, writeSessionMessage, writeSessionReaction, writeOutboundDirect } from './session-manager.js';
 import { wakeContainer } from './container-runner.js';
 import { getSession } from './db/sessions.js';
 import type { AgentGroup, MessagingGroup, MessagingGroupAgent } from './types.js';
-import type { InboundEvent } from './channels/adapter.js';
+import type { InboundEvent, InboundReaction } from './channels/adapter.js';
 
 function generateId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -338,6 +338,50 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
       messaging_group_id: mg.id,
       agent_group_id: null,
     });
+  }
+}
+
+/**
+ * Route an inbound emoji reaction. Unlike routeInbound this NEVER wakes a
+ * container, never creates a session, and never auto-creates a messaging
+ * group — reactions are ambient metadata. For each wired agent that already
+ * has an active session for this chat, the reaction is stored in that
+ * session's inbound.db (keyed by the same per-agent message id scheme as
+ * messages_in, so the agent can join reactions to the messages they're on).
+ * Reactions on unwired chats, or chats with no live session, are dropped.
+ */
+export async function routeReaction(
+  channelType: string,
+  platformId: string,
+  threadId: string | null,
+  reaction: InboundReaction,
+): Promise<void> {
+  // Mirror routeInbound's thread policy: non-threaded adapters collapse to channel.
+  const adapter = getChannelAdapter(channelType);
+  const effThreadId = adapter && !adapter.supportsThreads ? null : threadId;
+
+  const found = getMessagingGroupWithAgentCount(channelType, platformId);
+  if (!found || found.agentCount === 0) return; // unwired chat — nothing to attach to
+
+  for (const agent of getMessagingGroupAgents(found.mg.id)) {
+    // Only attach to an EXISTING session — a reaction must not spawn one.
+    const session = findSessionForAgent(agent.agent_group_id, found.mg.id, effThreadId);
+    if (!session) continue;
+    try {
+      writeSessionReaction(agent.agent_group_id, session.id, {
+        messageId: messageIdForAgent(reaction.messageId, agent.agent_group_id),
+        reactorId: reaction.reactorId,
+        reactorName: reaction.reactorName ?? null,
+        emoji: reaction.emoji,
+        timestamp: reaction.timestamp,
+      });
+    } catch (err) {
+      log.warn('Failed to store inbound reaction', {
+        agentGroupId: agent.agent_group_id,
+        sessionId: session.id,
+        err,
+      });
+    }
   }
 }
 

@@ -23,6 +23,31 @@ export interface ChannelSetup {
 
   /** Called when a user clicks a button/action in a card (e.g., ask_user_question response). */
   onAction(questionId: string, selectedOption: string, userId: string): void;
+
+  /**
+   * Called when a user adds or removes an emoji reaction on a message.
+   *
+   * Optional — only adapters whose platform exposes reaction events implement
+   * the listener that calls this (e.g. WhatsApp's `messages.reaction`). The
+   * host stores the reaction as session metadata in inbound.db; it does NOT
+   * wake the agent (reactions are ambient signal the agent reads on demand,
+   * mirroring the outbound `add_reaction` tool). An empty `emoji` means the
+   * reactor cleared their reaction.
+   */
+  onReaction?(platformId: string, threadId: string | null, reaction: InboundReaction): void | Promise<void>;
+}
+
+/** A user's emoji reaction on a platform message. */
+export interface InboundReaction {
+  /** Platform message id of the message that was reacted to. */
+  messageId: string;
+  /** Platform id of the user who reacted. */
+  reactorId: string;
+  /** Display name of the reactor, if the adapter knows it. */
+  reactorName?: string;
+  /** The emoji; empty string means the reaction was removed. */
+  emoji: string;
+  timestamp: string;
 }
 
 /** Delivery address used for reply-to overrides and (normally) the inbound's own origin. */

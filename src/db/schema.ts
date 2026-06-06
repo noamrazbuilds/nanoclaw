@@ -216,6 +216,21 @@ CREATE TABLE IF NOT EXISTS session_routing (
   platform_id  TEXT,
   thread_id    TEXT
 );
+
+-- Inbound emoji reactions on this session's messages. Host writes (from the
+-- adapter's reaction listener), container reads on demand. Reactions are
+-- metadata, NOT messages_in rows — they never wake the agent (mirrors the
+-- outbound side, where add_reaction is a tool, not a message). An empty emoji
+-- means the reactor removed their reaction; the host deletes the row instead.
+CREATE TABLE IF NOT EXISTS reactions (
+  message_id   TEXT NOT NULL,   -- platform id of the reacted-to message
+  reactor_id   TEXT NOT NULL,   -- platform id of the user who reacted
+  reactor_name TEXT,
+  emoji        TEXT NOT NULL,
+  timestamp    TEXT NOT NULL,
+  PRIMARY KEY (message_id, reactor_id)
+);
+CREATE INDEX IF NOT EXISTS idx_reactions_message ON reactions(message_id);
 `;
 
 /** Container-owned: outbound messages + processing acknowledgments. */

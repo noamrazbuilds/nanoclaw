@@ -15,7 +15,7 @@ import { runMigrations } from './db/migrations/index.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
-import { routeInbound } from './router.js';
+import { routeInbound, routeReaction } from './router.js';
 import { log } from './log.js';
 
 // Response + shutdown registries live in response-registry.ts to break the
@@ -136,6 +136,11 @@ async function main(): Promise<void> {
           threadId: null,
         }).catch((err) => {
           log.error('Failed to handle question response', { questionId, err });
+        });
+      },
+      onReaction(platformId, threadId, reaction) {
+        routeReaction(adapter.channelType, platformId, threadId, reaction).catch((err) => {
+          log.error('Failed to route inbound reaction', { channelType: adapter.channelType, err });
         });
       },
     };

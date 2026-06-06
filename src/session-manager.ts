@@ -34,6 +34,8 @@ import {
   upsertSessionRouting,
   insertMessage,
   migrateMessagesInTable,
+  migrateReactionsTable,
+  upsertReaction,
 } from './db/session-db.js';
 import { log } from './log.js';
 import type { Session } from './types.js';
@@ -250,6 +252,26 @@ export function writeSessionMessage(
 }
 
 /**
+ * Write (or remove) an inbound reaction into a session's inbound.db. Reactions
+ * are passive metadata — they do NOT wake the agent and do NOT bump the
+ * session's last_active (that would distort session-lifecycle decisions). The
+ * agent reads them on demand from the reactions table. An empty emoji removes
+ * the reactor's reaction.
+ */
+export function writeSessionReaction(
+  agentGroupId: string,
+  sessionId: string,
+  reaction: { messageId: string; reactorId: string; reactorName: string | null; emoji: string; timestamp: string },
+): void {
+  const db = openInboundDb(agentGroupId, sessionId);
+  try {
+    upsertReaction(db, reaction);
+  } finally {
+    db.close();
+  }
+}
+
+/**
  * If message content has attachments with base64 `data`, save them to
  * the session's inbox directory and replace with `localPath`.
  *
@@ -361,6 +383,7 @@ function extractAttachmentFiles(
 export function openInboundDb(agentGroupId: string, sessionId: string): Database.Database {
   const db = openInboundDbRaw(inboundDbPath(agentGroupId, sessionId));
   migrateMessagesInTable(db);
+  migrateReactionsTable(db);
   return db;
 }
 

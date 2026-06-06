@@ -331,6 +331,51 @@ export function migrateMessagesInTable(db: Database.Database): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// reactions (host writes, container reads — metadata, never wakes the agent)
+// ---------------------------------------------------------------------------
+
+/**
+ * Create the reactions table on pre-existing session DBs that predate it.
+ * Idempotent (CREATE TABLE IF NOT EXISTS); called from the host's inbound.db
+ * open path so existing sessions gain the table on the next open.
+ */
+export function migrateReactionsTable(db: Database.Database): void {
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS reactions (
+       message_id   TEXT NOT NULL,
+       reactor_id   TEXT NOT NULL,
+       reactor_name TEXT,
+       emoji        TEXT NOT NULL,
+       timestamp    TEXT NOT NULL,
+       PRIMARY KEY (message_id, reactor_id)
+     );
+     CREATE INDEX IF NOT EXISTS idx_reactions_message ON reactions(message_id);`,
+  );
+}
+
+/**
+ * Upsert (or, on empty emoji, delete) one inbound reaction. An empty emoji
+ * means the reactor removed their reaction — mirrors Baileys' messages.reaction
+ * semantics where a cleared reaction arrives as an empty text.
+ */
+export function upsertReaction(
+  db: Database.Database,
+  reaction: { messageId: string; reactorId: string; reactorName: string | null; emoji: string; timestamp: string },
+): void {
+  if (!reaction.emoji) {
+    db.prepare('DELETE FROM reactions WHERE message_id = ? AND reactor_id = ?').run(
+      reaction.messageId,
+      reaction.reactorId,
+    );
+    return;
+  }
+  db.prepare(
+    `INSERT OR REPLACE INTO reactions (message_id, reactor_id, reactor_name, emoji, timestamp)
+     VALUES (@messageId, @reactorId, @reactorName, @emoji, @timestamp)`,
+  ).run(reaction);
+}
+
 /**
  * Look up an inbound row's source_session_id by its message id. Returns null
  * if the row doesn't exist or the column is NULL (channel inbound or
