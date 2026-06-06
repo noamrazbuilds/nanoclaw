@@ -307,6 +307,7 @@ describe('sessions', () => {
     container_status: 'stopped' as const,
     last_active: null,
     created_at: now(),
+    skills_hash: '',
   });
 
   it('should create and retrieve', () => {
@@ -390,6 +391,7 @@ describe('pending questions', () => {
       container_status: 'stopped',
       last_active: null,
       created_at: now(),
+      skills_hash: '',
     });
   });
 

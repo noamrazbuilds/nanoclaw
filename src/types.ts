@@ -129,6 +129,8 @@ export interface Session {
   container_status: 'running' | 'idle' | 'stopped';
   last_active: string | null;
   created_at: string;
+  /** Container-skill set fingerprint at creation (C3 drift safeguard). */
+  skills_hash: string;
 }
 
 // ── Session DB entities ──

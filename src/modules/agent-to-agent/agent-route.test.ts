@@ -7,6 +7,7 @@ import { isSafeAttachmentName, routeAgentMessage } from './agent-route.js';
 import { createDestination } from './db/agent-destinations.js';
 import { initTestDb, closeDb, runMigrations, createAgentGroup } from '../../db/index.js';
 import { createSession, updateSession } from '../../db/sessions.js';
+import { computeSkillsHash } from '../../skills-hash.js';
 import { initSessionFolder, inboundDbPath, sessionDir, writeSessionMessage } from '../../session-manager.js';
 import type { Session } from '../../types.js';
 
@@ -113,7 +114,8 @@ describe('routeAgentMessage return-path', () => {
       status: 'active',
       container_status: 'stopped',
       last_active: null,
-      created_at: '2026-01-01T00:00:00.000Z',
+      created_at: new Date(Date.now() - 3 * 3_600_000).toISOString(), // older, within 24h drift cap
+      skills_hash: computeSkillsHash(), // match the live hash so the C3 drift gate reuses these
     };
     S2 = {
       id: 'sess-A-new',
@@ -124,7 +126,8 @@ describe('routeAgentMessage return-path', () => {
       status: 'active',
       container_status: 'stopped',
       last_active: null,
-      created_at: '2026-02-01T00:00:00.000Z',
+      created_at: new Date(Date.now() - 1 * 3_600_000).toISOString(), // newest, within 24h drift cap
+      skills_hash: computeSkillsHash(), // match the live hash so the C3 drift gate reuses these
     };
     SB = {
       id: 'sess-B',
@@ -135,7 +138,8 @@ describe('routeAgentMessage return-path', () => {
       status: 'active',
       container_status: 'stopped',
       last_active: null,
-      created_at: '2026-01-15T00:00:00.000Z',
+      created_at: new Date(Date.now() - 2 * 3_600_000).toISOString(), // middle, within 24h drift cap
+      skills_hash: computeSkillsHash(), // match the live hash so the C3 drift gate reuses these
     };
     createSession(S1);
     createSession(S2);
@@ -312,7 +316,8 @@ describe('routeAgentMessage return-path', () => {
       status: 'active',
       container_status: 'stopped',
       last_active: null,
-      created_at: '2026-03-01T00:00:00.000Z',
+      created_at: new Date(Date.now() - 1 * 3_600_000).toISOString(), // within 24h drift cap
+      skills_hash: computeSkillsHash(), // match the live hash so the C3 drift gate reuses these
     };
     createSession(SC);
     initSessionFolder(C, SC.id);

@@ -38,6 +38,7 @@ import {
   upsertReaction,
 } from './db/session-db.js';
 import { log } from './log.js';
+import { computeSkillsHash } from './skills-hash.js';
 import type { Session } from './types.js';
 
 function isPathInside(parent: string, child: string): boolean {
@@ -91,16 +92,47 @@ function generateId(): string {
  * - 'agent-shared': one session per agent group — all messaging groups
  *   wired with this mode share a single session (e.g. GitHub + Slack)
  */
+/** C3 agent-drift safeguard: hard-rotate a session after this age. */
+const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000; // 24h
+
+/**
+ * C3 agent-drift gate. Returns true if `existing` may be reused. If the
+ * session has aged past the 24h cap, or the container-skill set changed since
+ * it was created (instruction surface drift), the session is marked 'closed'
+ * — so the active-only lookups skip it and a fresh session is created — and
+ * false is returned. Rotation is silent to the user, matching the v1 fork.
+ */
+export function reusableSession(existing: Session, currentSkillsHash: string): boolean {
+  const ageMs = Date.now() - new Date(existing.created_at).getTime();
+  let reason: 'age' | 'skills_changed' | null = null;
+  if (ageMs > MAX_SESSION_AGE_MS) reason = 'age';
+  else if (existing.skills_hash !== currentSkillsHash) reason = 'skills_changed';
+  if (!reason) return true;
+
+  updateSession(existing.id, { status: 'closed' });
+  log.info('Session invalidated by drift safeguard', {
+    id: existing.id,
+    agentGroupId: existing.agent_group_id,
+    reason,
+    ageHours: Math.round(ageMs / 3_600_000),
+  });
+  return false;
+}
+
 export function resolveSession(
   agentGroupId: string,
   messagingGroupId: string | null,
   threadId: string | null,
   sessionMode: 'shared' | 'per-thread' | 'agent-shared',
 ): { session: Session; created: boolean } {
+  // Container-skill fingerprint for the drift gate + new-session stamp. One
+  // filesystem walk per resolve (the skills dir is small); matches v1.
+  const skillsHash = computeSkillsHash();
+
   // agent-shared: single session per agent group, regardless of messaging group
   if (sessionMode === 'agent-shared') {
     const existing = findSessionByAgentGroup(agentGroupId);
-    if (existing) {
+    if (existing && reusableSession(existing, skillsHash)) {
       return { session: existing, created: false };
     }
   } else if (messagingGroupId) {
@@ -108,7 +140,7 @@ export function resolveSession(
     // Scope lookup by agent_group_id so fan-out to multiple agents in the
     // same chat doesn't accidentally deliver to the wrong agent's session.
     const existing = findSessionForAgent(agentGroupId, messagingGroupId, lookupThreadId);
-    if (existing) {
+    if (existing && reusableSession(existing, skillsHash)) {
       return { session: existing, created: false };
     }
   }
@@ -125,6 +157,7 @@ export function resolveSession(
     container_status: 'stopped',
     last_active: null,
     created_at: new Date().toISOString(),
+    skills_hash: skillsHash,
   };
 
   createSession(session);
