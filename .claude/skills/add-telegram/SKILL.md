@@ -9,7 +9,9 @@ Adds Telegram bot support via the Chat SDK bridge.
 
 ## Install
 
-NanoClaw doesn't ship channels in trunk. This skill copies the Telegram adapter, its formatting/pairing helpers, their tests, and the `pair-telegram` setup step in from `noamrazbuilds/nanoclaw-telegram` (the user's Telegram fork). Switching the source from upstream's `channels` branch to this fork is the install-wiring change from `migration-notes/phase-2-revised-plan.md` Phase 0; it keeps fork-specific Telegram customizations consumable by v2 installs.
+NanoClaw doesn't ship channels in trunk. This skill copies the v2-native Telegram adapter (Chat SDK bridge), its formatting/pairing helpers, their tests, and the `pair-telegram` setup step in from the fork's `channels` branch (`origin/channels`, seeded from upstream and carrying fork-specific Telegram customizations).
+
+> **Source correction (2026-06-07):** an earlier Phase-0 wiring pointed this skill at `telegram-fork/main` (`noamrazbuilds/nanoclaw-telegram`). That fork still carries the **v1-lineage** adapter (imports `../logger.js`, `./registry.js`, v1 `types.ts` exports) which **does not compile under v2** — the same fork-vs-v2 integration gap documented for WhatsApp in `migration-notes/batch1-fork-to-v2-integration-gap.md`. The v2-native Chat-SDK-bridge adapter lives on `origin/channels`; fetch from there.
 
 ### Pre-flight (idempotent)
 
@@ -22,23 +24,21 @@ Skip to **Credentials** if all of these are already in place:
 
 Otherwise continue. Every step below is safe to re-run.
 
-### 1. Ensure the Telegram fork remote is configured
+### 1. Fetch the channels branch
 
 ```bash
-git remote get-url telegram-fork >/dev/null 2>&1 \
-  || git remote add telegram-fork https://github.com/noamrazbuilds/nanoclaw-telegram.git
-git fetch telegram-fork main
+git fetch origin channels
 ```
 
 ### 2. Copy the adapter, helpers, tests, and setup step
 
 ```bash
-git show telegram-fork/main:src/channels/telegram.ts                        > src/channels/telegram.ts
-git show telegram-fork/main:src/channels/telegram-pairing.ts                > src/channels/telegram-pairing.ts
-git show telegram-fork/main:src/channels/telegram-pairing.test.ts           > src/channels/telegram-pairing.test.ts
-git show telegram-fork/main:src/channels/telegram-markdown-sanitize.ts      > src/channels/telegram-markdown-sanitize.ts
-git show telegram-fork/main:src/channels/telegram-markdown-sanitize.test.ts > src/channels/telegram-markdown-sanitize.test.ts
-git show telegram-fork/main:setup/pair-telegram.ts                          > setup/pair-telegram.ts
+git show origin/channels:src/channels/telegram.ts                        > src/channels/telegram.ts
+git show origin/channels:src/channels/telegram-pairing.ts                > src/channels/telegram-pairing.ts
+git show origin/channels:src/channels/telegram-pairing.test.ts           > src/channels/telegram-pairing.test.ts
+git show origin/channels:src/channels/telegram-markdown-sanitize.ts      > src/channels/telegram-markdown-sanitize.ts
+git show origin/channels:src/channels/telegram-markdown-sanitize.test.ts > src/channels/telegram-markdown-sanitize.test.ts
+git show origin/channels:setup/pair-telegram.ts                          > setup/pair-telegram.ts
 ```
 
 ### 3. Append the self-registration import
@@ -60,7 +60,7 @@ In `setup/index.ts`, add this entry to the `STEPS` map (right after the `registe
 ### 5. Install the adapter package (pinned)
 
 ```bash
-pnpm install @chat-adapter/telegram@4.27.0
+pnpm install @chat-adapter/telegram@4.26.0
 ```
 
 ### 6. Build
