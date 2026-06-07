@@ -1,7 +1,7 @@
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
 import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
-import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
+import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks, getToolCallsSince } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
 import { clearCurrentInReplyTo, setCurrentInReplyTo, setSuppressChatOutput } from './current-batch.js';
 import {
@@ -16,6 +16,7 @@ import {
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { isCreditError } from './credit-error.js';
 import { getConfig } from './config.js';
+import { parseRequiredTools, unmetRequiredTools, type RequiredTool } from './required-tools.js';
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
@@ -172,6 +173,9 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // C4 part 2: honor a scheduled task's per-task model override, but only when
     // the group allows model delegation (migration 016 / allow_model_delegation).
     const taskModel = getConfig().allowModelDelegation ? taskModelOverride(keep) : undefined;
+    // C6: honest-failure enforcement scope for this run.
+    const requiredTools = taskRequiredTools(keep);
+    const turnStart = new Date().toISOString();
 
     const query = config.provider.query({
       prompt,
@@ -190,7 +194,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // C4 part 3: suppress intermediate send_message for suppress_chat_output tasks.
     setSuppressChatOutput(batchSuppressesChat(keep));
     try {
-      let result = await processQuery(query, routing, processingIds, config.providerName);
+      let result = await processQuery(query, routing, processingIds, config.providerName, requiredTools, turnStart);
 
       // C1: one-shot credit-error fallback. processQuery suppressed the raw
       // credit error; if a fallback model is configured, notify the user and
@@ -205,6 +209,8 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
           routing,
           processingIds,
           config.providerName,
+          requiredTools,
+          turnStart,
         );
         if (result.creditError) log('Fallback model also reported a credit error — surfacing, no further retry');
       } else if (result.creditError) {
@@ -238,6 +244,8 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
             routing,
             processingIds,
             config.providerName,
+            requiredTools,
+            turnStart,
           );
           if (fb.continuation) {
             continuation = fb.continuation;
@@ -306,6 +314,16 @@ function notifyCreditFallback(batch: MessageInRow[], routing: RoutingContext): v
     thread_id: routing.threadId,
     content: JSON.stringify({ text }),
   });
+}
+
+/** C6: the required-tools declaration carried in a task's content JSON, if any. */
+function taskRequiredTools(batch: MessageInRow[]): RequiredTool[] {
+  for (const m of batch) {
+    if (m.kind !== 'task') continue;
+    const rt = parseRequiredTools(m.content);
+    if (rt.length) return rt;
+  }
+  return [];
 }
 
 /** C4 part 2: the per-task model override carried in a task's content JSON, if any. */
@@ -393,6 +411,8 @@ async function processQuery(
   routing: RoutingContext,
   initialBatchIds: string[],
   providerName: string,
+  requiredTools: RequiredTool[] = [],
+  turnStart?: string,
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
   let done = false;
@@ -522,17 +542,41 @@ async function processQuery(
           creditError = true;
           log('Credit error in result text — suppressing, will retry on fallback model');
         } else if (event.text) {
-          const { hasUnwrapped } = dispatchResultText(event.text, routing);
-          if (hasUnwrapped && !unwrappedNudged) {
-            unwrappedNudged = true;
-            const destinations = getAllDestinations();
-            const names = destinations.map((d) => d.name).join(', ');
-            query.push(
-              `<system>Your response was not delivered — it was not wrapped in <message to="name">...</message> blocks. ` +
-                `All output must be wrapped: use <message to="name"> for content to send, or <internal> for scratchpad. ` +
-                `Your destinations: ${names}. ` +
-                `Please re-send your response with the correct wrapping.</system>`,
-            );
+          // C6 honest-failure gate (container-side prevention): for a task that
+          // declared required_tools, verify the runtime-written ledger shows
+          // those tools were actually invoked this run. If not, the reported
+          // result is a fabrication — deliver an honest-failure error INSTEAD of
+          // the agent's success, so the false result never reaches the user.
+          const unmet = requiredTools.length
+            ? unmetRequiredTools(getToolCallsSince(turnStart ?? ''), requiredTools)
+            : [];
+          if (unmet.length > 0) {
+            log(`Honest-failure override — declared required tools not invoked: ${unmet.join(', ')}`);
+            writeMessageOut({
+              id: generateId(),
+              kind: 'chat',
+              platform_id: routing.platformId,
+              channel_type: routing.channelType,
+              thread_id: routing.threadId,
+              content: JSON.stringify({
+                text:
+                  `[honest-failure-override] This scheduled task reported completion but did not invoke its ` +
+                  `required tool(s): ${unmet.join(', ')}. Treating as a failure — the reported result was not delivered.`,
+              }),
+            });
+          } else {
+            const { hasUnwrapped } = dispatchResultText(event.text, routing);
+            if (hasUnwrapped && !unwrappedNudged) {
+              unwrappedNudged = true;
+              const destinations = getAllDestinations();
+              const names = destinations.map((d) => d.name).join(', ');
+              query.push(
+                `<system>Your response was not delivered — it was not wrapped in <message to="name">...</message> blocks. ` +
+                  `All output must be wrapped: use <message to="name"> for content to send, or <internal> for scratchpad. ` +
+                  `Your destinations: ${names}. ` +
+                  `Please re-send your response with the correct wrapping.</system>`,
+              );
+            }
           }
         }
       }

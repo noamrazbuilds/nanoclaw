@@ -24,7 +24,7 @@ import { nextEvenSeq } from '../../db/session-db.js';
  */
 export function logTaskAudit(
   taskId: string,
-  action: 'create' | 'update' | 'cancel' | 'pause' | 'resume',
+  action: 'create' | 'update' | 'cancel' | 'pause' | 'resume' | 'honest-failure',
   source: string,
   before: string | null,
   after: string | null,

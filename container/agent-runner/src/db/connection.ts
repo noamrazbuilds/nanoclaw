@@ -172,6 +172,20 @@ export function recordToolCall(tool: string, status: 'success' | 'failure'): voi
 }
 
 /**
+ * C6: read this run's tool calls (ts >= since) from the container's own ledger,
+ * for the honest-failure gate. Tolerates the table's absence.
+ */
+export function getToolCallsSince(since: string): Array<{ tool: string; status: string }> {
+  try {
+    return getOutboundDb()
+      .prepare(`SELECT tool, status FROM tool_calls WHERE ts >= ? ORDER BY ts`)
+      .all(since) as Array<{ tool: string; status: string }>;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Touch the heartbeat file — replaces the old touchProcessing() DB writes.
  * The host checks this file's mtime for stale container detection.
  * A file touch is cheaper and avoids cross-boundary DB write contention.

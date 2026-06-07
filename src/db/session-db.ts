@@ -166,19 +166,26 @@ export function getMessageForRetry(
     .get(messageId, status) as { id: string; tries: number; processAfter: string | null } | undefined;
 }
 
-export function syncProcessingAcks(inDb: Database.Database, outDb: Database.Database): void {
+/**
+ * Sync container-acked completions into messages_in. Returns the ids that
+ * actually transitioned pending→completed THIS call (changes > 0) — a natural
+ * once-per-completion signal the host uses for the C6 honest-failure backstop.
+ */
+export function syncProcessingAcks(inDb: Database.Database, outDb: Database.Database): string[] {
   const completed = outDb
     .prepare("SELECT message_id FROM processing_ack WHERE status IN ('completed', 'failed')")
     .all() as Array<{ message_id: string }>;
 
-  if (completed.length === 0) return;
+  if (completed.length === 0) return [];
 
   const updateStmt = inDb.prepare("UPDATE messages_in SET status = 'completed' WHERE id = ? AND status != 'completed'");
+  const transitioned: string[] = [];
   inDb.transaction(() => {
     for (const { message_id } of completed) {
-      updateStmt.run(message_id);
+      if (updateStmt.run(message_id).changes > 0) transitioned.push(message_id);
     }
   })();
+  return transitioned;
 }
 
 export function getStuckProcessingIds(outDb: Database.Database): string[] {

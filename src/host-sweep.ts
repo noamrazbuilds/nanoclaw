@@ -168,7 +168,15 @@ async function sweepSession(session: Session): Promise<void> {
   try {
     // 1. Sync processing_ack → messages_in status
     if (outDb) {
-      syncProcessingAcks(inDb, outDb);
+      const transitioned = syncProcessingAcks(inDb, outDb);
+      // C6 honest-failure backstop: audit just-completed tasks against their
+      // required_tools using the runtime tool-call ledger.
+      // MODULE-HOOK:scheduling-honest-failure:start
+      if (transitioned.length > 0) {
+        const { runHonestFailureBackstop } = await import('./modules/scheduling/honest-failure.js');
+        runHonestFailureBackstop(inDb, outDb, transitioned);
+      }
+      // MODULE-HOOK:scheduling-honest-failure:end
     }
 
     // 2. Wake a container if work is due and nothing is running. Ordered
