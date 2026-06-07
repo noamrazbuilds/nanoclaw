@@ -18,11 +18,19 @@ import { readEnvFile } from '../env.js';
 import { registerProviderContainerConfig } from './provider-container-registry.js';
 
 registerProviderContainerConfig('claude', () => {
-  const dotenv = readEnvFile(['ANTHROPIC_BASE_URL']);
+  const dotenv = readEnvFile(['ANTHROPIC_BASE_URL', 'DEFAULT_FALLBACK_MODEL']);
   const env: Record<string, string> = {};
   if (dotenv.ANTHROPIC_BASE_URL) {
     env.ANTHROPIC_BASE_URL = dotenv.ANTHROPIC_BASE_URL;
     env.ANTHROPIC_AUTH_TOKEN = 'placeholder';
+    // C1 credit-error fallback model. Only meaningful alongside a custom
+    // ANTHROPIC_BASE_URL (the user's LiteLLM proxy) — that's what makes a
+    // non-Anthropic fallback like gemini reachable. The agent-runner reads it
+    // as NANOCLAW_FALLBACK_MODEL and re-runs once on it when Anthropic credits
+    // are exhausted. Absent → no fallback attempted.
+    if (dotenv.DEFAULT_FALLBACK_MODEL) {
+      env.NANOCLAW_FALLBACK_MODEL = dotenv.DEFAULT_FALLBACK_MODEL;
+    }
   }
   return { env };
 });

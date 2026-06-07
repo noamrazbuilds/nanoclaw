@@ -51,6 +51,13 @@ export interface QueryInput {
   cwd: string;
 
   /**
+   * Per-query model override. When set, takes precedence over the provider's
+   * configured model. Used by the C1 credit-error fallback to re-run a request
+   * on the fallback model without rebuilding the provider.
+   */
+  model?: string;
+
+  /**
    * System context to inject. Providers translate this into whatever their
    * SDK expects (preset append, full system prompt, per-turn injection…).
    */

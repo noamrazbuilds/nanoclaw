@@ -14,6 +14,7 @@ import {
   type RoutingContext,
 } from './formatter.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
+import { isCreditError } from './credit-error.js';
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
@@ -181,7 +182,35 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // can stamp it on outbound rows — needed for a2a return-path routing.
     setCurrentInReplyTo(routing.inReplyTo);
     try {
-      const result = await processQuery(query, routing, processingIds, config.providerName);
+      let result = await processQuery(query, routing, processingIds, config.providerName);
+
+      // C1: one-shot credit-error fallback. processQuery suppressed the raw
+      // credit error; if a fallback model is configured, notify the user and
+      // re-run the SAME request once on the fallback model in a FRESH session
+      // (no continuation — resuming would bounce back to the same Anthropic
+      // model). Capped at one retry: a second credit error is not retried.
+      if (result.creditError && FALLBACK_MODEL) {
+        log(`Credit exhaustion — retrying once on fallback model: ${FALLBACK_MODEL}`);
+        notifyCreditFallback(keep, routing);
+        result = await processQuery(
+          config.provider.query({ prompt, continuation: undefined, cwd: config.cwd, systemContext: config.systemContext, model: FALLBACK_MODEL }),
+          routing,
+          processingIds,
+          config.providerName,
+        );
+        if (result.creditError) log('Fallback model also reported a credit error — surfacing, no further retry');
+      } else if (result.creditError) {
+        log('Credit exhaustion but no fallback model configured (NANOCLAW_FALLBACK_MODEL unset)');
+        writeMessageOut({
+          id: generateId(),
+          kind: 'chat',
+          platform_id: routing.platformId,
+          channel_type: routing.channelType,
+          thread_id: routing.threadId,
+          content: JSON.stringify({ text: 'Error: Anthropic credit balance is exhausted and no fallback model is configured.' }),
+        });
+      }
+
       if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
         setContinuation(config.providerName, continuation);
@@ -190,24 +219,53 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       const errMsg = err instanceof Error ? err.message : String(err);
       log(`Query error: ${errMsg}`);
 
-      // Stale/corrupt continuation recovery: ask the provider whether
-      // this error means the stored continuation is unusable, and clear
-      // it so the next attempt starts fresh.
-      if (continuation && config.provider.isSessionInvalid(err)) {
-        log(`Stale session detected (${continuation}) — clearing for next retry`);
-        continuation = undefined;
-        clearContinuation(config.providerName);
+      // C1: a thrown credit error gets the same one-shot fallback treatment as
+      // the in-stream path above.
+      if (isCreditError(errMsg) && FALLBACK_MODEL) {
+        log(`Credit exhaustion (thrown) — retrying once on fallback model: ${FALLBACK_MODEL}`);
+        notifyCreditFallback(keep, routing);
+        try {
+          const fb = await processQuery(
+            config.provider.query({ prompt, continuation: undefined, cwd: config.cwd, systemContext: config.systemContext, model: FALLBACK_MODEL }),
+            routing,
+            processingIds,
+            config.providerName,
+          );
+          if (fb.continuation) {
+            continuation = fb.continuation;
+            setContinuation(config.providerName, continuation);
+          }
+        } catch (err2) {
+          const m2 = err2 instanceof Error ? err2.message : String(err2);
+          log(`Fallback query error: ${m2}`);
+          writeMessageOut({
+            id: generateId(),
+            kind: 'chat',
+            platform_id: routing.platformId,
+            channel_type: routing.channelType,
+            thread_id: routing.threadId,
+            content: JSON.stringify({ text: `Error: ${m2}` }),
+          });
+        }
+      } else {
+        // Stale/corrupt continuation recovery: ask the provider whether this
+        // error means the stored continuation is unusable, and clear it so the
+        // next attempt starts fresh.
+        if (continuation && config.provider.isSessionInvalid(err)) {
+          log(`Stale session detected (${continuation}) — clearing for next retry`);
+          continuation = undefined;
+          clearContinuation(config.providerName);
+        }
+        // Write error response so the user knows something went wrong
+        writeMessageOut({
+          id: generateId(),
+          kind: 'chat',
+          platform_id: routing.platformId,
+          channel_type: routing.channelType,
+          thread_id: routing.threadId,
+          content: JSON.stringify({ text: `Error: ${errMsg}` }),
+        });
       }
-
-      // Write error response so the user knows something went wrong
-      writeMessageOut({
-        id: generateId(),
-        kind: 'chat',
-        platform_id: routing.platformId,
-        channel_type: routing.channelType,
-        thread_id: routing.threadId,
-        content: JSON.stringify({ text: `Error: ${errMsg}` }),
-      });
     } finally {
       clearCurrentInReplyTo();
     }
@@ -217,6 +275,40 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     markCompleted(processingIds);
     log(`Completed ${ids.length} message(s)`);
   }
+}
+
+/**
+ * C1: tell the user we're falling back to the configured fallback model after
+ * Anthropic credit exhaustion. Skipped for scheduled tasks that set
+ * suppress_chat_output (C4 also gates this at the delivery layer; this avoids an
+ * early leak). Voice copy preserved from the v1 fork.
+ */
+function notifyCreditFallback(batch: MessageInRow[], routing: RoutingContext): void {
+  const isScheduled = batch.some((m) => m.kind === 'task');
+  if (isScheduled && batchSuppressesChat(batch)) return;
+  const text = isScheduled
+    ? 'Anthropic credit balance ran dry mid-task. Re-running this scheduled task on Gemini.'
+    : "Hey man, Anthropic credit balance ran dry. No worries — I'm re-running that on Gemini. Should be right back.";
+  writeMessageOut({
+    id: generateId(),
+    kind: 'chat',
+    platform_id: routing.platformId,
+    channel_type: routing.channelType,
+    thread_id: routing.threadId,
+    content: JSON.stringify({ text }),
+  });
+}
+
+/** True if any task in the batch declares suppress_chat_output in its content JSON. */
+function batchSuppressesChat(batch: MessageInRow[]): boolean {
+  return batch.some((m) => {
+    if (m.kind !== 'task') return false;
+    try {
+      return (JSON.parse(m.content) as { suppress_chat_output?: boolean })?.suppress_chat_output === true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 /**
@@ -255,7 +347,23 @@ function formatMessagesWithCommands(messages: MessageInRow[], nativeSlashCommand
 
 interface QueryResult {
   continuation?: string;
+  /**
+   * C1: the run hit Anthropic credit exhaustion — either as a thrown/in-stream
+   * error or as the SDK's exit-0 quirk (the credit error returned as the result
+   * text). When true, the credit-error text was NOT delivered to the user; the
+   * caller re-runs once on the fallback model.
+   */
+  creditError?: boolean;
 }
+
+/**
+ * C1: fallback model for the one-shot credit-error retry. Passed in by the host
+ * (NANOCLAW_FALLBACK_MODEL) only when a custom Anthropic-compatible endpoint
+ * (ANTHROPIC_BASE_URL → the user's LiteLLM proxy) is configured — which is
+ * exactly when a non-Anthropic fallback like gemini is reachable. Absent → no
+ * fallback configured → credit errors surface normally.
+ */
+const FALLBACK_MODEL = process.env.NANOCLAW_FALLBACK_MODEL;
 
 async function processQuery(
   query: AgentQuery,
@@ -266,6 +374,7 @@ async function processQuery(
   let queryContinuation: string | undefined;
   let done = false;
   let unwrappedNudged = false;
+  let creditError = false;
 
   // Concurrent polling: push follow-ups into the active query as they arrive.
   // We do NOT force-end the stream on silence — keeping the query open avoids
@@ -360,6 +469,12 @@ async function processQuery(
       handleEvent(event, routing);
       touchHeartbeat();
 
+      // C1: an in-stream error event carrying credit-exhaustion text → flag for
+      // the one-shot fallback retry (don't surface the raw error).
+      if (event.type === 'error' && isCreditError(event.message)) {
+        creditError = true;
+      }
+
       if (event.type === 'init') {
         queryContinuation = event.continuation;
         // Persist immediately so a mid-turn container crash still lets the
@@ -377,7 +492,13 @@ async function processQuery(
         // (send_message) mid-turn, or the message may not need a response
         // at all — either way the turn is finished.
         markCompleted(initialBatchIds);
-        if (event.text) {
+        // C1: SDK exit-0 quirk — a credit-balance error can arrive as the
+        // "successful" result text. Suppress it (don't deliver to the user) and
+        // flag for the fallback retry instead of dispatching the API error.
+        if (event.text && isCreditError(event.text)) {
+          creditError = true;
+          log('Credit error in result text — suppressing, will retry on fallback model');
+        } else if (event.text) {
           const { hasUnwrapped } = dispatchResultText(event.text, routing);
           if (hasUnwrapped && !unwrappedNudged) {
             unwrappedNudged = true;
@@ -398,7 +519,7 @@ async function processQuery(
     clearInterval(pollHandle);
   }
 
-  return { continuation: queryContinuation };
+  return { continuation: queryContinuation, creditError };
 }
 
 function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
