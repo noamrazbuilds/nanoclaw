@@ -473,13 +473,22 @@ export async function buildAgentGroupImage(agentGroupId: string): Promise<void> 
   if (!configRow) throw new Error('Container config not found');
   const aptPackages = JSON.parse(configRow.packages_apt) as string[];
   const npmPackages = JSON.parse(configRow.packages_npm) as string[];
-  if (aptPackages.length === 0 && npmPackages.length === 0) {
+  const pipPackages = JSON.parse(configRow.packages_pip) as string[];
+  if (aptPackages.length === 0 && npmPackages.length === 0 && pipPackages.length === 0) {
     throw new Error('No packages to install. Use install_packages first.');
   }
 
   let dockerfile = `FROM ${CONTAINER_IMAGE}\nUSER root\n`;
   if (aptPackages.length > 0) {
     dockerfile += `RUN apt-get update && apt-get install -y ${aptPackages.join(' ')} && rm -rf /var/lib/apt/lists/*\n`;
+  }
+  if (pipPackages.length > 0) {
+    // F3: Python pip deps for Python container skills (e.g. link-to-audio).
+    // --break-system-packages: the base image is Debian-externally-managed; we
+    // install into the system site-packages deliberately (the container is
+    // single-purpose). Requires python3 + python3-pip — declare those in
+    // packages_apt for groups that use pip skills (the apt step runs first).
+    dockerfile += `RUN python3 -m pip install --break-system-packages ${pipPackages.join(' ')}\n`;
   }
   if (npmPackages.length > 0) {
     // pnpm skips build scripts unless packages are allowlisted. Append each
@@ -493,7 +502,7 @@ export async function buildAgentGroupImage(agentGroupId: string): Promise<void> 
 
   const imageTag = `${CONTAINER_IMAGE_BASE}:${agentGroupId}`;
 
-  log.info('Building per-agent-group image', { agentGroupId, imageTag, apt: aptPackages, npm: npmPackages });
+  log.info('Building per-agent-group image', { agentGroupId, imageTag, apt: aptPackages, npm: npmPackages, pip: pipPackages });
 
   // Write Dockerfile to temp file and build
   const tmpDockerfile = path.join(DATA_DIR, `Dockerfile.${agentGroupId}`);

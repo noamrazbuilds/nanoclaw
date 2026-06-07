@@ -32,7 +32,7 @@ export interface AdditionalMountConfig {
 /** Shape of the materialized `container.json` file read by the container runner. */
 export interface ContainerConfig {
   mcpServers: Record<string, McpServerConfig>;
-  packages: { apt: string[]; npm: string[] };
+  packages: { apt: string[]; npm: string[]; pip: string[] };
   imageTag?: string;
   additionalMounts: AdditionalMountConfig[];
   skills: string[] | 'all';
@@ -54,6 +54,7 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     packages: {
       apt: JSON.parse(row.packages_apt) as string[],
       npm: JSON.parse(row.packages_npm) as string[],
+      pip: JSON.parse(row.packages_pip) as string[],
     },
     imageTag: row.image_tag ?? undefined,
     additionalMounts: JSON.parse(row.additional_mounts) as AdditionalMountConfig[],
