@@ -3,7 +3,7 @@ import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } 
 import { writeMessageOut } from './db/messages-out.js';
 import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
-import { clearCurrentInReplyTo, setCurrentInReplyTo } from './current-batch.js';
+import { clearCurrentInReplyTo, setCurrentInReplyTo, setSuppressChatOutput } from './current-batch.js';
 import {
   formatMessages,
   extractRouting,
@@ -15,6 +15,7 @@ import {
 } from './formatter.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { isCreditError } from './credit-error.js';
+import { getConfig } from './config.js';
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
@@ -168,11 +169,16 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
 
+    // C4 part 2: honor a scheduled task's per-task model override, but only when
+    // the group allows model delegation (migration 016 / allow_model_delegation).
+    const taskModel = getConfig().allowModelDelegation ? taskModelOverride(keep) : undefined;
+
     const query = config.provider.query({
       prompt,
       continuation,
       cwd: config.cwd,
       systemContext: config.systemContext,
+      model: taskModel,
     });
 
     // Process the query while concurrently polling for new messages
@@ -181,6 +187,8 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // Publish the batch's in_reply_to so MCP tools (send_message, send_file)
     // can stamp it on outbound rows — needed for a2a return-path routing.
     setCurrentInReplyTo(routing.inReplyTo);
+    // C4 part 3: suppress intermediate send_message for suppress_chat_output tasks.
+    setSuppressChatOutput(batchSuppressesChat(keep));
     try {
       let result = await processQuery(query, routing, processingIds, config.providerName);
 
@@ -268,6 +276,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       }
     } finally {
       clearCurrentInReplyTo();
+      setSuppressChatOutput(false);
     }
 
     // Ensure completed even if processQuery ended without a result event
@@ -297,6 +306,20 @@ function notifyCreditFallback(batch: MessageInRow[], routing: RoutingContext): v
     thread_id: routing.threadId,
     content: JSON.stringify({ text }),
   });
+}
+
+/** C4 part 2: the per-task model override carried in a task's content JSON, if any. */
+function taskModelOverride(batch: MessageInRow[]): string | undefined {
+  for (const m of batch) {
+    if (m.kind !== 'task') continue;
+    try {
+      const model = (JSON.parse(m.content) as { model?: string })?.model;
+      if (model) return model;
+    } catch {
+      /* not a JSON task body — ignore */
+    }
+  }
+  return undefined;
 }
 
 /** True if any task in the batch declares suppress_chat_output in its content JSON. */

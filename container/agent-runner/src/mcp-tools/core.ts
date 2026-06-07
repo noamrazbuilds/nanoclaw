@@ -9,7 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { getCurrentInReplyTo } from '../current-batch.js';
+import { getCurrentInReplyTo, getSuppressChatOutput } from '../current-batch.js';
 import { findByName, getAllDestinations } from '../destinations.js';
 import { getMessageIdBySeq, getRoutingBySeq, writeMessageOut } from '../db/messages-out.js';
 import { getSessionRouting } from '../db/session-routing.js';
@@ -114,6 +114,14 @@ export const sendMessage: McpToolDefinition = {
 
     const routing = resolveRouting(args.to as string | undefined);
     if ('error' in routing) return err(routing.error);
+
+    // C4 part 3: when running a suppress_chat_output task, drop intermediate
+    // chat sends. Report success to the agent (so it doesn't retry/derail) but
+    // don't emit the outbound row. The task's final result still goes out.
+    if (getSuppressChatOutput()) {
+      log(`send_message suppressed (suppress_chat_output task) → ${routing.resolvedName}`);
+      return ok(`Message noted (chat output suppressed for this task) → ${routing.resolvedName}`);
+    }
 
     const id = generateId();
     const seq = writeMessageOut({

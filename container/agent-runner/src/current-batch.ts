@@ -27,3 +27,22 @@ export function getCurrentInReplyTo(): string | null {
   return currentInReplyTo;
 }
 
+/**
+ * C4 part 3: transitive output suppression. Set true while the runner is
+ * processing a scheduled task whose content declares `suppress_chat_output`.
+ * The `send_message` MCP tool consults this and drops intermediate chat sends —
+ * the progress / multi-subagent-orchestration messages that leaked to chat in
+ * the 2026-05-15 incident. The agent's FINAL result (dispatchResultText) is NOT
+ * gated by this flag, so the task's digest still goes out: "release only the
+ * final result." Cleared after the batch completes or errors.
+ */
+let suppressChatOutput = false;
+
+export function setSuppressChatOutput(value: boolean): void {
+  suppressChatOutput = value;
+}
+
+export function getSuppressChatOutput(): boolean {
+  return suppressChatOutput;
+}
+

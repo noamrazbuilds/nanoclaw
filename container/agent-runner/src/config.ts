@@ -18,6 +18,8 @@ export interface RunnerConfig {
   mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
   model?: string;
   effort?: string;
+  /** C4: whether a scheduled task may override the model via its content `model` field. */
+  allowModelDelegation?: boolean;
 }
 
 const DEFAULT_MAX_MESSAGES = 10;
@@ -47,6 +49,7 @@ export function loadConfig(): RunnerConfig {
     mcpServers: (raw.mcpServers as RunnerConfig['mcpServers']) || {},
     model: (raw.model as string) || undefined,
     effort: (raw.effort as string) || undefined,
+    allowModelDelegation: raw.allowModelDelegation === true,
   };
 
   return _config;
