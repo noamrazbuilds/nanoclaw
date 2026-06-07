@@ -42,14 +42,22 @@ describe('C3 agent-drift safeguard — reusableSession', () => {
 
   it('keeps a session at 23h (under the 24h cap)', () => {
     const hash = computeSkillsHash();
-    const s = makeSession({ id: 'sess-23h', created_at: new Date(Date.now() - 23 * HOUR).toISOString(), skills_hash: hash });
+    const s = makeSession({
+      id: 'sess-23h',
+      created_at: new Date(Date.now() - 23 * HOUR).toISOString(),
+      skills_hash: hash,
+    });
     createSession(s);
     expect(reusableSession(s, hash)).toBe(true);
   });
 
   it('invalidates a session older than 24h and marks it closed (reason=age)', () => {
     const hash = computeSkillsHash();
-    const s = makeSession({ id: 'sess-old', created_at: new Date(Date.now() - 25 * HOUR).toISOString(), skills_hash: hash });
+    const s = makeSession({
+      id: 'sess-old',
+      created_at: new Date(Date.now() - 25 * HOUR).toISOString(),
+      skills_hash: hash,
+    });
     createSession(s);
     expect(reusableSession(s, hash)).toBe(false);
     expect(getSession('sess-old')!.status).toBe('closed');

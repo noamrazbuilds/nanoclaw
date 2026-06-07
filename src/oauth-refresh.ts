@@ -1,0 +1,308 @@
+/**
+ * U4 — OAuth Token Refresh for Claude Max Subscription
+ *
+ * Monitors the Claude OAuth token, auto-refreshes before expiry using the
+ * refresh token from ~/.claude/.credentials.json, and notifies via the
+ * supplied callback if refresh fails. Host-side daemon (Node), started from
+ * src/index.ts. Ported verbatim from the v1 fork; only the logger calls
+ * (pino → v2 `log`) and the proxy-URL source (config) were adapted.
+ *
+ * The SOCKS5 proxy path is RETIRED (2026-04-03 — direct connections work) but
+ * kept as a documented fallback: set OAUTH_PROXY_URL in .env to re-enable.
+ */
+import fs from 'fs';
+import path from 'path';
+import https from 'https';
+
+import { SocksProxyAgent } from 'socks-proxy-agent';
+
+import { OAUTH_PROXY_URL } from './config.js';
+import { log } from './log.js';
+
+const CREDENTIALS_PATH = path.join(process.env.HOME || '/root', '.claude', '.credentials.json');
+
+// Claude Code OAuth client ID and scopes (from Claude CLI)
+const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+const OAUTH_SCOPES = [
+  'user:profile',
+  'user:inference',
+  'user:sessions:claude_code',
+  'user:mcp_servers',
+  'user:file_upload',
+];
+
+// Refresh 30 minutes before expiry (allows retries if tunnel is temporarily down)
+const REFRESH_BUFFER_MS = 30 * 60 * 1000;
+// Check every 5 minutes
+const CHECK_INTERVAL_MS = 5 * 60 * 1000;
+
+interface OAuthCredentials {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  scopes?: string[];
+  subscriptionType?: string;
+  rateLimitTier?: string;
+}
+
+let notifyFn: ((message: string) => Promise<void>) | null = null;
+let refreshTimer: ReturnType<typeof setInterval> | null = null;
+let lastNotifiedExpiry = 0;
+
+/**
+ * Read OAuth credentials from the Claude credentials file.
+ */
+function readCredentials(): OAuthCredentials | null {
+  try {
+    if (!fs.existsSync(CREDENTIALS_PATH)) return null;
+    const data = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf-8'));
+    const oauth =
+      typeof data.claudeAiOauth === 'string' ? JSON.parse(data.claudeAiOauth) : data.claudeAiOauth;
+    if (!oauth?.accessToken || !oauth?.refreshToken || !oauth?.expiresAt) {
+      return null;
+    }
+    return oauth as OAuthCredentials;
+  } catch (err) {
+    log.warn('Failed to read Claude OAuth credentials', { err });
+    return null;
+  }
+}
+
+/**
+ * Write updated OAuth credentials back to the credentials file.
+ */
+function writeCredentials(creds: OAuthCredentials): void {
+  try {
+    const data = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf-8'));
+    data.claudeAiOauth = JSON.stringify(creds);
+    fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(data));
+    // Token written to credentials file (read fresh by getOAuthToken)
+  } catch (err) {
+    log.error('Failed to write updated OAuth credentials', { err });
+  }
+}
+
+/**
+ * Update the CLAUDE_OAUTH_TOKEN in .env with the new access token.
+ */
+function updateEnvToken(newToken: string): void {
+  const envPath = path.join(process.cwd(), '.env');
+  try {
+    let content = fs.readFileSync(envPath, 'utf-8');
+    if (content.includes('CLAUDE_OAUTH_TOKEN=')) {
+      content = content.replace(/^CLAUDE_OAUTH_TOKEN=.*$/m, `CLAUDE_OAUTH_TOKEN=${newToken}`);
+    } else {
+      content += `\nCLAUDE_OAUTH_TOKEN=${newToken}\n`;
+    }
+    fs.writeFileSync(envPath, content);
+    log.info('Updated CLAUDE_OAUTH_TOKEN in .env');
+  } catch (err) {
+    log.error('Failed to update .env with new token', { err });
+  }
+}
+
+/**
+ * Refresh the OAuth token using the refresh token.
+ * Uses the Claude.ai OAuth endpoint.
+ */
+async function refreshToken(refreshToken: string): Promise<OAuthCredentials | null> {
+  return new Promise((resolve) => {
+    const postData = JSON.stringify({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: OAUTH_CLIENT_ID,
+      scope: OAUTH_SCOPES.join(' '),
+    });
+
+    const requestOptions: https.RequestOptions = {
+      hostname: 'platform.claude.com',
+      path: '/v1/oauth/token',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData),
+      },
+    };
+
+    // Route through SOCKS5 proxy when configured (bypasses Cloudflare datacenter IP blocks)
+    if (OAUTH_PROXY_URL) {
+      requestOptions.agent = new SocksProxyAgent(OAUTH_PROXY_URL);
+    }
+
+    const req = https.request(requestOptions, (res) => {
+      let body = '';
+      res.on('data', (chunk) => (body += chunk));
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          log.error('OAuth token refresh failed', { statusCode: res.statusCode, body: body.slice(0, 500) });
+          resolve(null);
+          return;
+        }
+        try {
+          const data = JSON.parse(body);
+          resolve({
+            accessToken: data.access_token,
+            refreshToken: data.refresh_token || refreshToken,
+            expiresAt: Date.now() + (data.expires_in || 3600) * 1000,
+            scopes: data.scopes,
+            subscriptionType: data.subscription_type,
+            rateLimitTier: data.rate_limit_tier,
+          });
+        } catch (err) {
+          log.error('Failed to parse refresh response', { err, body: body.slice(0, 200) });
+          resolve(null);
+        }
+      });
+    });
+
+    req.on('error', (err) => {
+      log.error('OAuth refresh request error', { err });
+      resolve(null);
+    });
+
+    req.setTimeout(15000, () => {
+      req.destroy();
+      resolve(null);
+    });
+
+    req.write(postData);
+    req.end();
+  });
+}
+
+/**
+ * Check token expiry and refresh if needed.
+ */
+async function checkAndRefresh(): Promise<void> {
+  const creds = readCredentials();
+  if (!creds) {
+    log.debug('No OAuth credentials found, skipping refresh check');
+    return;
+  }
+
+  const now = Date.now();
+  const timeUntilExpiry = creds.expiresAt - now;
+
+  if (timeUntilExpiry > REFRESH_BUFFER_MS) {
+    const hoursLeft = (timeUntilExpiry / 3600000).toFixed(1);
+    log.debug('OAuth token still valid', { hoursLeft });
+    return;
+  }
+
+  log.info('OAuth token expiring soon, attempting refresh', {
+    expiresIn: Math.round(timeUntilExpiry / 1000),
+  });
+
+  // Retry up to 3 times with 30s gaps (tunnel may be temporarily down)
+  let newCreds: OAuthCredentials | null = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    newCreds = await refreshToken(creds.refreshToken);
+    if (newCreds) break;
+    if (attempt < 3) {
+      log.warn('OAuth refresh failed, retrying in 30s', { attempt });
+      await new Promise((r) => setTimeout(r, 30_000));
+    }
+  }
+
+  if (newCreds) {
+    // Update credentials file and .env
+    writeCredentials(newCreds);
+    updateEnvToken(newCreds.accessToken);
+
+    const hoursUntil = ((newCreds.expiresAt - Date.now()) / 3600000).toFixed(1);
+    log.info('OAuth token refreshed successfully', { expiresInHours: hoursUntil });
+    lastNotifiedExpiry = 0; // Reset notification flag
+  } else {
+    // Refresh failed — notify user
+    if (lastNotifiedExpiry !== creds.expiresAt && notifyFn) {
+      lastNotifiedExpiry = creds.expiresAt;
+      const minutesLeft = Math.max(0, Math.round(timeUntilExpiry / 60000));
+
+      const message =
+        `⚠️ *Claude Max Token Expiring*\n\n` +
+        `The OAuth token expires in ~${minutesLeft} minutes and auto-refresh failed. ` +
+        `NanoClaw will fall back to API billing when it expires.\n\n` +
+        `*To re-authenticate:*\n` +
+        `1. SSH into the server\n` +
+        `2. Run: \`claude login\`\n` +
+        `3. Then: \`cd ~/nanoclaw-v2 && python3 -c "import json; d=json.load(open('/home/nanoclaw/.claude/.credentials.json')); o=d['claudeAiOauth'] if isinstance(d['claudeAiOauth'],dict) else json.loads(d['claudeAiOauth']); print(o['accessToken'])" | xargs -I{} sed -i 's/^CLAUDE_OAUTH_TOKEN=.*/CLAUDE_OAUTH_TOKEN={}/' .env\`\n` +
+        `4. Restart: \`systemctl --user restart nanoclaw\``;
+
+      notifyFn(message).catch((err) => log.error('Failed to send token expiry notification', { err }));
+    }
+  }
+}
+
+/**
+ * Detect auth errors in container stderr output.
+ * Returns true if the error looks like an expired/invalid OAuth token.
+ */
+export function isAuthError(stderr: string): boolean {
+  const authPatterns = [
+    /credential.*not authorized/i,
+    /oauth.*token.*expired/i,
+    /authentication.*failed/i,
+    /invalid.*token/i,
+    /401.*unauthorized/i,
+    /token.*revoked/i,
+  ];
+  return authPatterns.some((p) => p.test(stderr));
+}
+
+/**
+ * Detect credit balance errors from the Anthropic API.
+ * Returns true if the error indicates insufficient API credits.
+ */
+export function isCreditError(stderr: string): boolean {
+  const creditPatterns = [
+    /credit.*balance.*too.*low/i,
+    /credit_balance_too_low/i,
+    /insufficient.*credits/i,
+    /402.*payment.*required/i,
+    /payment.*required/i,
+    /billing.*limit/i,
+    /out.*of.*credits/i,
+  ];
+  return creditPatterns.some((p) => p.test(stderr));
+}
+
+/**
+ * Start the OAuth token refresh monitor.
+ * Call this during NanoClaw startup.
+ */
+export function startOAuthRefreshMonitor(notify: (message: string) => Promise<void>): void {
+  notifyFn = notify;
+
+  // Initial check
+  checkAndRefresh().catch((err) => log.error('Initial OAuth check failed', { err }));
+
+  // Periodic checks
+  refreshTimer = setInterval(() => {
+    checkAndRefresh().catch((err) => log.error('Periodic OAuth check failed', { err }));
+  }, CHECK_INTERVAL_MS);
+
+  log.info('OAuth token refresh monitor started');
+}
+
+/**
+ * Get the latest OAuth access token. Always reads fresh from the credentials
+ * file so that externally-refreshed tokens (NAS push, manual update) are
+ * picked up immediately without needing a process restart.
+ */
+export function getOAuthToken(): string {
+  const creds = readCredentials();
+  if (creds?.accessToken) {
+    return creds.accessToken;
+  }
+  return '';
+}
+
+/**
+ * Stop the monitor (for graceful shutdown).
+ */
+export function stopOAuthRefreshMonitor(): void {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+}

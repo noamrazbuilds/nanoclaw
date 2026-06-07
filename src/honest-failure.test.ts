@@ -47,7 +47,9 @@ describe('unmetRequiredTools', () => {
 
 describe('parseRequiredTools', () => {
   it('parses a declared required_tools array', () => {
-    const out = parseRequiredTools(JSON.stringify({ prompt: 'x', required_tools: [{ op_match: 'a' }, { op_match: 'b' }] }));
+    const out = parseRequiredTools(
+      JSON.stringify({ prompt: 'x', required_tools: [{ op_match: 'a' }, { op_match: 'b' }] }),
+    );
     expect(out.map((r) => r.op_match)).toEqual(['a', 'b']);
   });
   it('returns [] when absent (lenient) or malformed', () => {
@@ -71,19 +73,27 @@ describe('C6 host honest-failure backstop', () => {
     const inDb = openInboundDb(INBOUND);
     const content = JSON.stringify({ prompt: 'concert', ...(opts.withRequired ? { required_tools: REQUIRED } : {}) });
     inDb
-      .prepare("INSERT INTO messages_in (id, seq, kind, timestamp, status, content) VALUES (?, 2, 'task', ?, 'completed', ?)")
+      .prepare(
+        "INSERT INTO messages_in (id, seq, kind, timestamp, status, content) VALUES (?, 2, 'task', ?, 'completed', ?)",
+      )
       .run('task-concert', '2026-06-07T00:00:00.000Z', content);
     const outDb = openOutboundDbRw(OUTBOUND);
     return { inDb, outDb };
   }
 
   function addCall(outDb: ReturnType<typeof openOutboundDbRw>, tool: string, status: string) {
-    outDb.prepare('INSERT INTO tool_calls (tool, status, ts) VALUES (?, ?, ?)').run(tool, status, '2026-06-07T01:00:00.000Z');
+    outDb
+      .prepare('INSERT INTO tool_calls (tool, status, ts) VALUES (?, ?, ?)')
+      .run(tool, status, '2026-06-07T01:00:00.000Z');
   }
 
   function honestFailures(): number {
     return (
-      getDb().prepare("SELECT COUNT(*) AS n FROM task_audit_log WHERE task_id = 'task-concert' AND action = 'honest-failure'").get() as {
+      getDb()
+        .prepare(
+          "SELECT COUNT(*) AS n FROM task_audit_log WHERE task_id = 'task-concert' AND action = 'honest-failure'",
+        )
+        .get() as {
         n: number;
       }
     ).n;

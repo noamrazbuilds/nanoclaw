@@ -502,7 +502,13 @@ export async function buildAgentGroupImage(agentGroupId: string): Promise<void> 
 
   const imageTag = `${CONTAINER_IMAGE_BASE}:${agentGroupId}`;
 
-  log.info('Building per-agent-group image', { agentGroupId, imageTag, apt: aptPackages, npm: npmPackages, pip: pipPackages });
+  log.info('Building per-agent-group image', {
+    agentGroupId,
+    imageTag,
+    apt: aptPackages,
+    npm: npmPackages,
+    pip: pipPackages,
+  });
 
   // Write Dockerfile to temp file and build
   const tmpDockerfile = path.join(DATA_DIR, `Dockerfile.${agentGroupId}`);

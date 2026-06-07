@@ -16,6 +16,7 @@ import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runti
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
 import { routeInbound, routeReaction } from './router.js';
+import { startOAuthRefreshMonitor, stopOAuthRefreshMonitor } from './oauth-refresh.js';
 import { log } from './log.js';
 
 // Response + shutdown registries live in response-registry.ts to break the
@@ -182,6 +183,14 @@ async function main(): Promise<void> {
   // 7. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();
 
+  // 8. U4: auto-refresh the Claude Max OAuth token before expiry. Refresh
+  // failure is rare (only when the refresh token itself is invalid) and the
+  // notify callback logs it loudly; a future refinement can DM an owner via the
+  // approvals-delivery path. The token auto-refresh works regardless of notify.
+  startOAuthRefreshMonitor(async (message) => {
+    log.error('OAuth token expiry — manual re-auth needed', { message });
+  });
+
   log.info('NanoClaw running');
 }
 
@@ -197,6 +206,7 @@ async function shutdown(signal: string): Promise<void> {
   }
   stopDeliveryPolls();
   stopHostSweep();
+  stopOAuthRefreshMonitor();
   await stopCliServer();
   try {
     await teardownChannelAdapters();
