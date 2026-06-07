@@ -89,6 +89,14 @@ This argues for a **two-pass Phase 1**:
 - **Pass A (immediate, no spec deps):** Fix `tasks.ts` to preserve `model`, `suppress_chat_output`; fix `sessions.ts` (or sessions migration step) to set `created_at` and `skills_hash` from sources. Handle G13 (container_config JSON unpacking) since it's pure migration logic.
 - **Pass B (after C3/C5/F1/F6 land their schema in v2):** Add migration steps for `reactions`, `task_audit_log`, `arena_*`, `skills_hash`. Each is a small focused script under `setup/migrate-v2/fork-extras-*.ts` or extended into the existing steps.
 
+> **✅ PASS-B RESOLVED (2026-06-07) — all four consciously NOT migrated.** Once C3/C5/F1/F6 actually landed, their architectures overturned the migrate-everything assumption above:
+> - **`reactions` (13,789) — SKIP** (user decision 2026-06-07). F6 put reactions in **per-session `inbound.db`**, keyed by platform message-id, as metadata that *never wakes the agent*; **no container read-path consumes them** (the reaction-consumption affordance is still an open F6 item). Sessions are created lazily, so there is no `inbound.db` to receive historical reactions at migration time. Migration is impractical *and* currently valueless; live reactions populate per-session going forward. The G5 "substantial loss" framing predates this design.
+> - **`arena_*` (12/62/41) — FRESH START** (user decision 2026-06-07). F1's spec already deemed fresh acceptable; the user chose it over a continuity copy. Past arena rows remain in the v1 snapshot only.
+> - **`task_audit_log` (49) — SKIP.** `tasks.ts` remaps v1 task-ids → new v2 ids (`migrated_from_v1.original_id`), so verbatim audit rows would carry dangling `task_id` refs. Its purpose (C5/C6) is forward integrity, not historical reconstruction. Low value + referential mismatch.
+> - **`skills_hash` — MOOT.** Recomputed by C3's drift gate on first session resolution; nothing to migrate.
+>
+> **Net: Pass-B has zero new migration steps.** The migration pipeline is exactly Pass-A's steps (env, db, groups, sessions, tasks, container-configs, channel-auth). The frozen v1 snapshot (`~/nanoclaw-v1-snapshot-20260607-142631`, sha256 `031c7b48…`) retains everything not migrated, so nothing is destroyed.
+
 ## Recommended Phase 1 deliverables
 
 1. **`setup/migrate-v2/tasks.ts` patch** — extend V1Task interface + content-JSON to include `model` and `suppress_chat_output`. ~10 LOC. Tested via dry-run against a copy of production messages.db.
