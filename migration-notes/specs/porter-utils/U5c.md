@@ -1,5 +1,7 @@
 # U5c — host-ops.ts (predefined host operations from container)
 
+> **✅ DROP — v2-NATIVE (2026-06-07).** All 4 v1 host-ops are covered natively in v2, so no port: `restart_service` + `rebuild_container` → `ncl groups restart [--rebuild]` (in-container CLI, `container-restart.ts`); `refresh_oauth` → obviated by **U4**'s host-side auto-refresh daemon (no manual op needed); `update_allowlist` → the v2 permissions module (`ncl members`/`roles`/`approvals` + `pending_sender_approvals`). The allowlist-as-security-boundary intent is preserved by ncl's per-resource approval gating. (Same pattern as F5's `register_group` → ncl drop.)
+
 ## Source (v1)
 - File: `docs/v1-fork-reference/src/host-ops.ts` (231 LOC).
 - IPC integration: `docs/v1-fork-reference/src/ipc.ts:16` imports `executeHostOp` + `isValidHostOp`; line 841 dispatches `data.op` through the host-op handler when an IPC frame carries `{op, args}`.

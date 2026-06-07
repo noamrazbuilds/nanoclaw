@@ -1,5 +1,7 @@
 # U5b — text-styles.ts (channel-native markdown formatting)
 
+> **✅ DROP — v2-NATIVE (2026-06-07).** v2 does channel formatting **per-adapter**, not via a shared `text-styles.ts`: the WhatsApp adapter (`origin/channels:whatsapp.ts`) has its own `formatWhatsApp`/`transformForWhatsApp`; Telegram has `telegram-markdown-sanitize.ts`; Slack has the `slack-formatting` container skill. These came in with the channel adapters (Batch 1/2). v1's shared `text-styles.ts` is frozen reference only — nothing imports it. No port. (Same outcome as the spec's “replace with channel-formatting”, realized via the per-adapter formatting already present.)
+
 ## Source (v1)
 - File: `docs/v1-fork-reference/src/text-styles.ts` (337 LOC).
 - Exports: `parseTextStyles(text, channel)`, `parseSignalStyles(rawText)`, types `ChannelType` + `SignalTextStyle`.
