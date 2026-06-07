@@ -268,4 +268,79 @@ export const addReaction: McpToolDefinition = {
   },
 };
 
-registerTools([sendMessage, sendFile, editMessage, addReaction]);
+// F5: generate an image via LiteLLM and deliver it in one step (no separate
+// send_message). Reuses the send_file delivery path (outbox + files[]). The
+// LiteLLM host/key reach the container via env (OneCLI injects the real auth);
+// the model is overridable via NANOCLAW_IMAGE_MODEL.
+export const generateImage: McpToolDefinition = {
+  tool: {
+    name: 'generate_image',
+    description:
+      'Generate an image from a text prompt and send it to a destination in one step (no separate send_message). ' +
+      'Use when the user asks to generate/create/draw/make an image or picture.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        prompt: { type: 'string', description: 'Detailed description of the image to generate' },
+        to: { type: 'string', description: 'Destination name. Optional if you have only one destination.' },
+        caption: { type: 'string', description: 'Optional caption sent with the image' },
+        size: {
+          type: 'string',
+          enum: ['1024x1024', '1792x1024', '1024x1792'],
+          description: 'Image dimensions (default 1024x1024; 1792x1024 landscape, 1024x1792 portrait)',
+        },
+      },
+      required: ['prompt'],
+    },
+  },
+  async handler(args) {
+    const prompt = args.prompt as string;
+    if (!prompt) return err('prompt is required');
+
+    const routing = resolveRouting(args.to as string | undefined);
+    if ('error' in routing) return err(routing.error);
+
+    const size = (args.size as string) || '1024x1024';
+    const host = process.env.LITELLM_HOST || 'http://host.docker.internal:4000';
+    const key = process.env.LITELLM_API_KEY || 'sk-placeholder';
+    const model = process.env.NANOCLAW_IMAGE_MODEL || 'gpt-image-2';
+
+    let b64: string | undefined;
+    try {
+      const res = await fetch(`${host}/v1/images/generations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify({ model, prompt, n: 1, size, response_format: 'b64_json' }),
+      });
+      if (!res.ok) {
+        return err(`Image generation failed (${res.status}): ${(await res.text()).slice(0, 300)}`);
+      }
+      const json = (await res.json()) as { data?: Array<{ b64_json?: string }> };
+      b64 = json.data?.[0]?.b64_json;
+    } catch (e) {
+      return err(`Image generation request failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (!b64) return err('Image generation returned no image data.');
+
+    const id = generateId();
+    const filename = `generated-${id}.png`;
+    const outboxDir = path.join('/workspace/outbox', id);
+    fs.mkdirSync(outboxDir, { recursive: true });
+    fs.writeFileSync(path.join(outboxDir, filename), Buffer.from(b64, 'base64'));
+
+    writeMessageOut({
+      id,
+      in_reply_to: getCurrentInReplyTo(),
+      kind: 'chat',
+      platform_id: routing.platform_id,
+      channel_type: routing.channel_type,
+      thread_id: routing.thread_id,
+      content: JSON.stringify({ text: (args.caption as string) || '', files: [filename] }),
+    });
+
+    log(`generate_image: ${id} → ${routing.resolvedName} (${filename}, ${size})`);
+    return ok(`Image generated and sent to ${routing.resolvedName} (${filename}).`);
+  },
+};
+
+registerTools([sendMessage, sendFile, editMessage, addReaction, generateImage]);
