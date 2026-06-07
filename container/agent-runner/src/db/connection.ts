@@ -108,6 +108,17 @@ export function getOutboundDb(): Database {
         updated_at               TEXT NOT NULL
       );
     `);
+    // C5 tool-call ledger: one row per completed tool call (PostToolUse /
+    // PostToolUseFailure). Host reads it for C6 honest-failure enforcement.
+    // Forward-compat for older outbound.db files.
+    _outbound.exec(`
+      CREATE TABLE IF NOT EXISTS tool_calls (
+        id     INTEGER PRIMARY KEY AUTOINCREMENT,
+        tool   TEXT NOT NULL,
+        status TEXT NOT NULL,
+        ts     TEXT NOT NULL
+      );
+    `);
   }
   return _outbound;
 }
@@ -146,6 +157,18 @@ export function clearContainerToolInFlight(): void {
          updated_at = excluded.updated_at`,
     )
     .run(now);
+}
+
+/**
+ * C5 tool-call ledger: append one row per completed tool call. Called from the
+ * SDK PostToolUse (status 'success') and PostToolUseFailure (status 'failure')
+ * hooks — i.e. written by the runtime, not the model, so C6 can trust it over a
+ * self-reported success summary.
+ */
+export function recordToolCall(tool: string, status: 'success' | 'failure'): void {
+  getOutboundDb()
+    .prepare(`INSERT INTO tool_calls (tool, status, ts) VALUES (?, ?, ?)`)
+    .run(tool, status, new Date().toISOString());
 }
 
 /**
@@ -247,6 +270,12 @@ export function initTestSessionDb(): { inbound: Database; outbound: Database } {
       tool_declared_timeout_ms INTEGER,
       tool_started_at          TEXT,
       updated_at               TEXT NOT NULL
+    );
+    CREATE TABLE tool_calls (
+      id     INTEGER PRIMARY KEY AUTOINCREMENT,
+      tool   TEXT NOT NULL,
+      status TEXT NOT NULL,
+      ts     TEXT NOT NULL
     );
   `);
 

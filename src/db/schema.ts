@@ -278,4 +278,19 @@ CREATE TABLE IF NOT EXISTS container_state (
   tool_started_at          TEXT,
   updated_at               TEXT NOT NULL
 );
+
+-- C5 tool-call ledger. Container appends one row per completed tool call (from
+-- the SDK PostToolUse / PostToolUseFailure hooks); host reads it. This is the
+-- mechanical record C6 (honest-failure enforcement) checks against a task's
+-- declared required-tool surface — written by the runtime hook, NOT the model,
+-- so it can't be fabricated by a hallucinated success summary. Run-scoping is by
+-- timestamp window: each session has its own outbound.db and turns run
+-- sequentially within a session, so a task run's [start, end] window is precise.
+CREATE TABLE IF NOT EXISTS tool_calls (
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  tool   TEXT NOT NULL,
+  status TEXT NOT NULL,   -- 'success' | 'failure'
+  ts     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_ts ON tool_calls(ts);
 `;

@@ -3,7 +3,7 @@ import path from 'path';
 
 import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 
-import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
+import { clearContainerToolInFlight, recordToolCall, setContainerToolInFlight } from '../db/connection.js';
 import { registerProvider } from './provider-registry.js';
 import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
@@ -178,15 +178,28 @@ const preToolUseHook: HookCallback = async (input) => {
   return { continue: true };
 };
 
-/** Clear in-flight tool on PostToolUse / PostToolUseFailure. */
-const postToolUseHook: HookCallback = async () => {
-  try {
-    clearContainerToolInFlight();
-  } catch (err) {
-    log(`PostToolUse: failed to clear container_state: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  return { continue: true };
-};
+/**
+ * Clear in-flight tool AND append a row to the C5 tool-call ledger. One factory
+ * for both terminal events: PostToolUse → 'success', PostToolUseFailure →
+ * 'failure'. The ledger is written here (by the runtime), not by the model, so
+ * C6 honest-failure enforcement can trust it over the agent's self-report.
+ */
+function makePostToolUseHook(status: 'success' | 'failure'): HookCallback {
+  return async (input) => {
+    try {
+      clearContainerToolInFlight();
+    } catch (err) {
+      log(`PostToolUse: failed to clear container_state: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    try {
+      const toolName = (input as { tool_name?: string }).tool_name ?? '';
+      if (toolName) recordToolCall(toolName, status);
+    } catch (err) {
+      log(`PostToolUse: failed to record tool_call: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return { continue: true };
+  };
+}
 
 function createPreCompactHook(assistantName?: string): HookCallback {
   return async (input) => {
@@ -306,8 +319,8 @@ export class ClaudeProvider implements AgentProvider {
         mcpServers: this.mcpServers,
         hooks: {
           PreToolUse: [{ hooks: [preToolUseHook] }],
-          PostToolUse: [{ hooks: [postToolUseHook] }],
-          PostToolUseFailure: [{ hooks: [postToolUseHook] }],
+          PostToolUse: [{ hooks: [makePostToolUseHook('success')] }],
+          PostToolUseFailure: [{ hooks: [makePostToolUseHook('failure')] }],
           PreCompact: [{ hooks: [createPreCompactHook(this.assistantName)] }],
         },
       },

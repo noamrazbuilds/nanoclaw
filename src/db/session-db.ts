@@ -241,6 +241,39 @@ export function getContainerState(outDb: Database.Database): ContainerState | nu
   }
 }
 
+export interface ToolCallRow {
+  tool: string;
+  status: string; // 'success' | 'failure'
+  ts: string;
+}
+
+/**
+ * Read the container's tool-call ledger (C5). The container appends a row per
+ * completed tool call via the SDK Post(ToolUse|ToolUseFailure) hooks. Optionally
+ * filter to a time window [since, until] (ISO-8601) — C6 uses this to scope the
+ * ledger to a single task run's window (precise because each session has its own
+ * outbound.db and turns run sequentially within it). Tolerates the table's
+ * absence on older session DBs.
+ */
+export function getToolCalls(db: Database.Database, window?: { since?: string; until?: string }): ToolCallRow[] {
+  try {
+    const clauses: string[] = [];
+    const params: string[] = [];
+    if (window?.since) {
+      clauses.push('ts >= ?');
+      params.push(window.since);
+    }
+    if (window?.until) {
+      clauses.push('ts <= ?');
+      params.push(window.until);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    return db.prepare(`SELECT tool, status, ts FROM tool_calls ${where} ORDER BY ts`).all(...params) as ToolCallRow[];
+  } catch {
+    return [];
+  }
+}
+
 // ---------------------------------------------------------------------------
 // messages_out (read-only from host)
 // ---------------------------------------------------------------------------

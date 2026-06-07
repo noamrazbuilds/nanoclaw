@@ -12,7 +12,34 @@
  */
 import type Database from 'better-sqlite3';
 
+import { getDb } from '../../db/connection.js';
+import { log } from '../../log.js';
 import { nextEvenSeq } from '../../db/session-db.js';
+
+/**
+ * C5: append a row to the central task_audit_log. Best-effort for the task path
+ * (matches v1) — a failed audit write must not break task scheduling, but is
+ * logged loudly. Writes to the CENTRAL db (getDb), independent of the session
+ * inbound.db the mutation operates on, so the trail survives session rotation.
+ */
+export function logTaskAudit(
+  taskId: string,
+  action: 'create' | 'update' | 'cancel' | 'pause' | 'resume',
+  source: string,
+  before: string | null,
+  after: string | null,
+): void {
+  try {
+    getDb()
+      .prepare(
+        `INSERT INTO task_audit_log (timestamp, task_id, action, source, before_snapshot, after_snapshot)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(new Date().toISOString(), taskId, action, source, before, after);
+  } catch (err) {
+    log.error('task_audit_log write failed', { taskId, action, source, err });
+  }
+}
 
 export function insertTask(
   db: Database.Database,
@@ -25,6 +52,7 @@ export function insertTask(
     threadId: string | null;
     content: string;
   },
+  source = 'ipc',
 ): void {
   db.prepare(
     `INSERT INTO messages_in (id, seq, timestamp, status, tries, process_after, recurrence, kind, platform_id, channel_type, thread_id, content, series_id)
@@ -33,24 +61,63 @@ export function insertTask(
     ...task,
     seq: nextEvenSeq(db),
   });
+  logTaskAudit(
+    task.id,
+    'create',
+    source,
+    null,
+    JSON.stringify({ content: task.content, recurrence: task.recurrence, processAfter: task.processAfter }),
+  );
 }
 
-export function cancelTask(db: Database.Database, taskId: string): void {
-  db.prepare(
-    "UPDATE messages_in SET status = 'completed', recurrence = NULL WHERE (id = ? OR series_id = ?) AND kind = 'task' AND status IN ('pending', 'paused')",
-  ).run(taskId, taskId);
+/** Snapshot the live rows a status transition is about to touch (for the audit before-image). */
+function liveTaskStatuses(
+  db: Database.Database,
+  taskId: string,
+  statuses: string[],
+): Array<{ id: string; status: string }> {
+  const placeholders = statuses.map(() => '?').join(', ');
+  return db
+    .prepare(
+      `SELECT id, status FROM messages_in WHERE (id = ? OR series_id = ?) AND kind = 'task' AND status IN (${placeholders})`,
+    )
+    .all(taskId, taskId, ...statuses) as Array<{ id: string; status: string }>;
 }
 
-export function pauseTask(db: Database.Database, taskId: string): void {
-  db.prepare(
-    "UPDATE messages_in SET status = 'paused' WHERE (id = ? OR series_id = ?) AND kind = 'task' AND status = 'pending'",
-  ).run(taskId, taskId);
+export function cancelTask(db: Database.Database, taskId: string, source = 'ipc'): void {
+  const before = liveTaskStatuses(db, taskId, ['pending', 'paused']);
+  const res = db
+    .prepare(
+      "UPDATE messages_in SET status = 'completed', recurrence = NULL WHERE (id = ? OR series_id = ?) AND kind = 'task' AND status IN ('pending', 'paused')",
+    )
+    .run(taskId, taskId);
+  if (res.changes > 0) {
+    logTaskAudit(taskId, 'cancel', source, JSON.stringify(before), JSON.stringify({ status: 'completed' }));
+  }
 }
 
-export function resumeTask(db: Database.Database, taskId: string): void {
-  db.prepare(
-    "UPDATE messages_in SET status = 'pending' WHERE (id = ? OR series_id = ?) AND kind = 'task' AND status = 'paused'",
-  ).run(taskId, taskId);
+export function pauseTask(db: Database.Database, taskId: string, source = 'ipc'): void {
+  const before = liveTaskStatuses(db, taskId, ['pending']);
+  const res = db
+    .prepare(
+      "UPDATE messages_in SET status = 'paused' WHERE (id = ? OR series_id = ?) AND kind = 'task' AND status = 'pending'",
+    )
+    .run(taskId, taskId);
+  if (res.changes > 0) {
+    logTaskAudit(taskId, 'pause', source, JSON.stringify(before), JSON.stringify({ status: 'paused' }));
+  }
+}
+
+export function resumeTask(db: Database.Database, taskId: string, source = 'ipc'): void {
+  const before = liveTaskStatuses(db, taskId, ['paused']);
+  const res = db
+    .prepare(
+      "UPDATE messages_in SET status = 'pending' WHERE (id = ? OR series_id = ?) AND kind = 'task' AND status = 'paused'",
+    )
+    .run(taskId, taskId);
+  if (res.changes > 0) {
+    logTaskAudit(taskId, 'resume', source, JSON.stringify(before), JSON.stringify({ status: 'pending' }));
+  }
 }
 
 export interface TaskUpdate {
@@ -64,7 +131,7 @@ export interface TaskUpdate {
 // clobbering other fields. Matches by id OR series_id so the live next
 // occurrence of a recurring task is updated, not just the completed row the
 // agent last saw. Returns the number of rows touched.
-export function updateTask(db: Database.Database, taskId: string, update: TaskUpdate): number {
+export function updateTask(db: Database.Database, taskId: string, update: TaskUpdate, source = 'ipc'): number {
   const rows = db
     .prepare(
       "SELECT id, content FROM messages_in WHERE (id = ? OR series_id = ?) AND kind = 'task' AND status IN ('pending', 'paused')",
@@ -104,6 +171,11 @@ export function updateTask(db: Database.Database, taskId: string, update: TaskUp
     }
   });
   tx();
+  // updateTask only ever changes definition fields (prompt/script/recurrence/
+  // process_after) — never incidental fields like last_run — so every call that
+  // touches rows is a "significant" change worth auditing (v1's significant-
+  // field guard existed to filter last_run noise, which doesn't apply here).
+  logTaskAudit(taskId, 'update', source, JSON.stringify(rows), JSON.stringify(update));
   return rows.length;
 }
 
