@@ -75,9 +75,21 @@ ncl groups config update --id <owner> \
 - [ ] #20 Execute cutover (mechanics above) + Pass-A migration + apply F2/F3/C4/C6 config + start + per-channel smoke — **NEEDS EXPLICIT GO** (goes live on real WhatsApp/Telegram).
 - [ ] #21 Remove stale `porter-*` worktrees (or fold into cutover mechanics option B).
 
+## OneCLI selective-secret-mode standby (CLAUDE.md gotcha — VERIFY ON FIRST SPAWN)
+
+All container API calls route through the OneCLI gateway (`applyContainerConfig` injects HTTPS_PROXY + CA; spawn hard-fails without it). `agentIdentifier = agentGroup.id` (`src/container-runner.ts:138`). On first spawn, `ensureAgent` creates a **new** OneCLI agent (identifier = `ag-…`) in **`selective` mode → no secrets injected**. Vault currently holds only the **Anthropic** secret (`api.anthropic.com`). v1 ran `USE_OAUTH=true` (Claude Max OAuth via `CLAUDE_OAUTH_TOKEN`, refreshed by U4), so the container *may* authenticate via OAuth and not need the vault key — **unknown until the first live spawn.** Cannot pre-empt: `set-secret-mode --id` needs the agent UUID, which doesn't exist until the agent registers on first spawn.
+
+**Standby procedure (the moment the first container spawns):**
+```bash
+onecli agents list                       # find the new ag-… agent's UUID + secretMode
+# If Claude calls 401 / auth-fail AND the agent is selective:
+onecli agents set-secret-mode --id <uuid> --mode all   # gateway looks up per-request; next call works, no restart
+```
+The Default Agent is already `mode all`; v1's per-folder agents (`whatsapp-anthony-belfiore`, …) are stale (v2 uses `ag-…` identifiers, won't reuse them). Likely want every active v2 agent on `mode all` once they register.
+
 ## Post-cutover smoke matrix
 
-WhatsApp: text · image · sticker · voice · reaction. Telegram: voice. Scheduled task: verify next-run lands. Tail `logs/nanoclaw.error.log` ~30 min.
+WhatsApp: text · image · sticker · voice · reaction. Telegram: voice. Scheduled task: verify next-run lands. Tail `logs/nanoclaw.error.log` ~30 min. **First spawn:** watch for the OneCLI selective-mode 401 above.
 
 ## Rollback
 
