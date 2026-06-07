@@ -1,5 +1,7 @@
 # U1-core — Voice transcription helper (v2 core)
 
+> **✅ DONE (`v2-migration` @ `9af8666`).** Added the channel-agnostic `transcribeAudioBuffer` helper + whisper script to v2 core; the WhatsApp (`c340084`/U1-wa) and Telegram (`1e07c3c`/U1-TG) adapters call it. The adapter-side deltas are re-targeted onto the v2-native adapter on `origin/channels` (`86646b5`). Original spec below.
+
 Sub-component of U1 (see `U1.md` for overview). Scope: the channel-agnostic helper and backend script that live in v2 core. WhatsApp and Telegram fork work are separately tracked as U1-wa and U1-tg.
 
 - **mechanism:** intent-port
