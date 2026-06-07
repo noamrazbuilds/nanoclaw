@@ -1,5 +1,7 @@
 # U5a — slots.ts (multi-slot agent sessions per group)
 
+> **⏸ DEFERRED (2026-06-07) — needs a design decision; the spec's mechanism is blocked.** The parser is a trivial leaf port, but the recommended orchestration (OQ#1 (a): map `#<slot>` → `thread_id = slot:<id>`, rely on v2's per-thread session lookup) **does not work for the channels slots is actually used on.** `routeInbound` collapses `threadId` to `null` for non-threaded adapters (`adapter.supportsThreads === false` → WhatsApp, Telegram — exactly where `#research`-style slots are used; `src/router.ts` ~line 166). So a `slot:<id>` thread_id is discarded before session lookup and slots wouldn't isolate. A working v2 design needs a slot-aware session key that survives the non-threaded collapse (e.g., fold the slot id into the session lookup independent of `thread_id`, or carry it on the inbound event past the collapse) — genuine design work, not a mechanical port. Slots is a niche power-user feature and optional; deferred (alongside F1) as a focused unit. The pure parser (`parseSlotPrefix` etc.) can be dropped in trivially once the orchestration design is settled. Original spec below.
+
 ## Source (v1)
 - File: `docs/v1-fork-reference/src/slots.ts` (87 LOC).
 - Exports: `parseSlotPrefix(text)`, `slotSessionKey(groupFolder, slotId)`, `slotIpcSubdir(slotId)`, types `SlotParseResult` + `SlotState`.
