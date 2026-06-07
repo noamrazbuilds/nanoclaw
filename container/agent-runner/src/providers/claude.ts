@@ -4,6 +4,7 @@ import path from 'path';
 import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 
 import { clearContainerToolInFlight, recordToolCall, setContainerToolInFlight } from '../db/connection.js';
+import { archiveTranscript } from '../transcript-archive.js';
 import { registerProvider } from './provider-registry.js';
 import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
@@ -111,45 +112,9 @@ class MessageStream {
   }
 }
 
-// ── Transcript archiving (PreCompact hook) ──
-
-interface ParsedMessage {
-  role: 'user' | 'assistant';
-  content: string;
-}
-
-function parseTranscript(content: string): ParsedMessage[] {
-  const messages: ParsedMessage[] = [];
-  for (const line of content.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const entry = JSON.parse(line);
-      if (entry.type === 'user' && entry.message?.content) {
-        const text = typeof entry.message.content === 'string' ? entry.message.content : entry.message.content.map((c: { text?: string }) => c.text || '').join('');
-        if (text) messages.push({ role: 'user', content: text });
-      } else if (entry.type === 'assistant' && entry.message?.content) {
-        const textParts = entry.message.content.filter((c: { type: string }) => c.type === 'text').map((c: { text: string }) => c.text);
-        const text = textParts.join('');
-        if (text) messages.push({ role: 'assistant', content: text });
-      }
-    } catch {
-      /* skip unparseable lines */
-    }
-  }
-  return messages;
-}
-
-function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | null, assistantName?: string): string {
-  const now = new Date();
-  const dateStr = now.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
-  const lines = [`# ${title || 'Conversation'}`, '', `Archived: ${dateStr}`, '', '---', ''];
-  for (const msg of messages) {
-    const sender = msg.role === 'user' ? 'User' : assistantName || 'Assistant';
-    const content = msg.content.length > 2000 ? msg.content.slice(0, 2000) + '...' : msg.content;
-    lines.push(`**${sender}**: ${content}`, '');
-  }
-  return lines.join('\n');
-}
+// ── Transcript archiving ──
+// parseTranscript / formatTranscriptMarkdown / archiveTranscript live in
+// ../transcript-archive.ts (shared with the SIGTERM handler — U6).
 
 /**
  * PreToolUse hook: record the current tool + its declared timeout so the host
@@ -206,37 +171,24 @@ function createPreCompactHook(assistantName?: string): HookCallback {
     const preCompact = input as PreCompactHookInput;
     const { transcript_path: transcriptPath, session_id: sessionId } = preCompact;
 
-    if (!transcriptPath || !fs.existsSync(transcriptPath)) {
-      log('No transcript found for archiving');
-      return {};
-    }
-
-    try {
-      const content = fs.readFileSync(transcriptPath, 'utf-8');
-      const messages = parseTranscript(content);
-      if (messages.length === 0) return {};
-
-      // Try to get summary from sessions index
-      let summary: string | undefined;
+    // Best-effort summary from the SDK's sessions index for a descriptive name.
+    let summary: string | undefined;
+    if (transcriptPath) {
       const indexPath = path.join(path.dirname(transcriptPath), 'sessions-index.json');
       if (fs.existsSync(indexPath)) {
         try {
           const index = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
-          summary = index.entries?.find((e: { sessionId: string; summary?: string }) => e.sessionId === sessionId)?.summary;
+          summary = index.entries?.find((e: { sessionId: string; summary?: string }) => e.sessionId === sessionId)
+            ?.summary;
         } catch {
           /* ignore */
         }
       }
+    }
 
-      const name = summary
-        ? summary.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50)
-        : `conversation-${new Date().getHours().toString().padStart(2, '0')}${new Date().getMinutes().toString().padStart(2, '0')}`;
-
-      const conversationsDir = '/workspace/agent/conversations';
-      fs.mkdirSync(conversationsDir, { recursive: true });
-      const filename = `${new Date().toISOString().split('T')[0]}-${name}.md`;
-      fs.writeFileSync(path.join(conversationsDir, filename), formatTranscriptMarkdown(messages, summary, assistantName));
-      log(`Archived conversation to ${filename}`);
+    try {
+      const filename = archiveTranscript(transcriptPath, assistantName, { summary });
+      if (filename) log(`Archived conversation to ${filename}`);
     } catch (err) {
       log(`Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`);
     }

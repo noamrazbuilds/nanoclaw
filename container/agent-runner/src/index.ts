@@ -32,6 +32,7 @@ import { buildSystemPromptAddendum } from './destinations.js';
 import './providers/index.js';
 import { createProvider, type ProviderName } from './providers/factory.js';
 import { runPollLoop } from './poll-loop.js';
+import { archiveTranscript, findLatestTranscript, recentlyArchived } from './transcript-archive.js';
 
 function log(msg: string): void {
   console.error(`[agent-runner] ${msg}`);
@@ -44,6 +45,23 @@ async function main(): Promise<void> {
   const providerName = config.provider.toLowerCase() as ProviderName;
 
   log(`Starting v2 agent-runner (provider: ${providerName})`);
+
+  // U6: archive a human-readable Markdown transcript when Docker kills the
+  // container (SIGTERM) — the case the SDK PreCompact hook never sees. Skip if
+  // PreCompact just archived (5-min dedup) to avoid a duplicate incomplete file.
+  process.on('SIGTERM', () => {
+    try {
+      if (!recentlyArchived()) {
+        const filename = archiveTranscript(findLatestTranscript(), config.assistantName || undefined, {
+          incomplete: true,
+        });
+        if (filename) log(`SIGTERM: archived incomplete session → ${filename}`);
+      }
+    } catch (err) {
+      log(`SIGTERM transcript archive failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    process.exit(0);
+  });
 
   // Runtime-generated system-prompt addendum: agent identity (name) plus
   // the live destinations map. Everything else (capabilities, per-module
