@@ -56,8 +56,7 @@ function readCredentials(): OAuthCredentials | null {
   try {
     if (!fs.existsSync(CREDENTIALS_PATH)) return null;
     const data = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf-8'));
-    const oauth =
-      typeof data.claudeAiOauth === 'string' ? JSON.parse(data.claudeAiOauth) : data.claudeAiOauth;
+    const oauth = typeof data.claudeAiOauth === 'string' ? JSON.parse(data.claudeAiOauth) : data.claudeAiOauth;
     if (!oauth?.accessToken || !oauth?.refreshToken || !oauth?.expiresAt) {
       return null;
     }

@@ -13,6 +13,7 @@ const envConfig = readEnvFile([
   'ONECLI_API_KEY',
   'TZ',
   'OAUTH_PROXY_URL',
+  'LITELLM_API_KEY',
 ]);
 
 export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
@@ -23,6 +24,10 @@ export const ASSISTANT_HAS_OWN_NUMBER =
 // direct connections to platform.claude.com work; kept as a documented fallback
 // if Cloudflare datacenter-IP blocking returns). Empty string = direct connect.
 export const OAUTH_PROXY_URL = process.env.OAUTH_PROXY_URL || envConfig.OAUTH_PROXY_URL || '';
+
+// F1 (Model Arena): LiteLLM gateway API key. Arena bots + grader call LiteLLM
+// directly on the host (http://localhost:4000); the key authenticates them.
+export const LITELLM_API_KEY = process.env.LITELLM_API_KEY || envConfig.LITELLM_API_KEY || '';
 
 // Absolute paths needed for container mounts
 const PROJECT_ROOT = process.cwd();

@@ -17,6 +17,7 @@ import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, st
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
 import { routeInbound, routeReaction } from './router.js';
 import { startOAuthRefreshMonitor, stopOAuthRefreshMonitor } from './oauth-refresh.js';
+import { startArena, stopArena } from './modules/arena/index.js';
 import { log } from './log.js';
 
 // Response + shutdown registries live in response-registry.ts to break the
@@ -191,6 +192,10 @@ async function main(): Promise<void> {
     log.error('OAuth token expiry — manual re-auth needed', { message });
   });
 
+  // 9. F1: Model Arena — host-side grammy bot bouquet (no-op unless
+  // ARENA_ENABLED). Self-contained module with its own data/arena.db + cron.
+  await startArena();
+
   log.info('NanoClaw running');
 }
 
@@ -207,6 +212,7 @@ async function shutdown(signal: string): Promise<void> {
   stopDeliveryPolls();
   stopHostSweep();
   stopOAuthRefreshMonitor();
+  await stopArena();
   await stopCliServer();
   try {
     await teardownChannelAdapters();
