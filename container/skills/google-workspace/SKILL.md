@@ -18,38 +18,49 @@ Get detailed help for a specific command, including parameters and usage example
 ### `mcp__gws__gws_run`
 Execute any gws command. This is the main tool for all Google Workspace operations.
 
-## Common Operations
+## Syntax rules (READ FIRST — getting these wrong causes 400/validation errors)
+
+These are the exact, verified forms. The CLI is strict; do not improvise.
+- **`--format=json`** uses an `=` (NOT `--format json` — the space form is parsed as a service name and fails).
+- **API parameters go in `--params '<json>'`** — a single JSON object, single-quoted. NOT individual `--spreadsheetId`/`--range` flags, and NOT a dotted subcommand like `spreadsheets.values` (use spaces: `spreadsheets values get`).
+- **`--json '<json>'`** carries a request body (e.g. row values). Inline it — `--json` does NOT accept `@file.json`.
+- Subcommand names are camelCase for the underlying API (`getProfile`, `batchUpdate`).
+- If a form fails, call `gws_help({ service, command })` to get the exact usage rather than guessing.
+
+## Common Operations (verified syntax)
 
 ### Gmail
 ```
-gws_run({ command: "gmail +triage" })                              # Unread inbox summary
-gws_run({ command: "gmail +read --id MESSAGE_ID" })                # Read a specific email
-gws_run({ command: "gmail +send --to user@example.com --subject 'Subject' --body 'Body'" })  # Send email (needs confirmation)
-gws_run({ command: "gmail +reply --id MESSAGE_ID --body 'Reply'" })  # Reply (needs confirmation)
-gws_run({ command: "gmail +forward --id MESSAGE_ID --to user@example.com" })  # Forward (needs confirmation)
-gws_run({ command: "gmail users.messages list --userId me --q 'from:someone@example.com'" })  # Search
+gws_run({ command: "gmail +triage --query 'is:unread'" })                 # Unread inbox summary (read)
+gws_run({ command: "gmail +read --id MESSAGE_ID" })                       # Read a specific email (read)
+gws_run({ command: "gmail +send --to user@example.com --subject 'Subject' --body 'Body line1\\nline2'" })  # Send (needs confirmation)
+gws_run({ command: "gmail +reply --id MESSAGE_ID --body 'Reply'" })       # Reply (needs confirmation)
+# Trash a message — note: `gmail +trash` does NOT exist; use the API form:
+gws_run({ command: "gmail users messages trash --params '{\"userId\":\"me\",\"id\":\"MESSAGE_ID\"}'" })  # (needs confirmation)
 ```
 
-### Calendar
+### Sheets  (use these to read/clear/write a sheet — NEVER use Drive ops to modify sheet contents)
 ```
-gws_run({ command: "calendar events list --calendarId primary" })  # List upcoming events
-gws_run({ command: "calendar events insert --calendarId primary --requestBody '{...}'" })  # Create event (needs confirmation)
-```
-
-### Drive
-```
-gws_run({ command: "drive files list --q 'name contains report'" })  # Search files
-gws_run({ command: "drive files get --fileId FILE_ID" })            # Get file metadata
-```
-
-### Sheets
-```
-gws_run({ command: "sheets spreadsheets.values get --spreadsheetId ID --range 'Sheet1!A1:B10'" })  # Read cells
-gws_run({ command: "sheets spreadsheets.values update --spreadsheetId ID --range 'A1' --requestBody '{...}'" })  # Update (needs confirmation)
+# Read a range:
+gws_run({ command: "sheets spreadsheets values get --params '{\"spreadsheetId\":\"ID\",\"range\":\"'Tab Name'!A:G\"}' --format=json" })
+# Clear a range (this is how you EMPTY a sheet — do NOT delete/trash the file):
+gws_run({ command: "sheets spreadsheets values clear --params '{\"spreadsheetId\":\"ID\",\"range\":\"'Tab Name'!A2:G\"}'" })  # (needs confirmation)
+# Overwrite values at a range:
+gws_run({ command: "sheets spreadsheets values update --params '{\"spreadsheetId\":\"ID\",\"range\":\"'Tab Name'!A2\",\"valueInputOption\":\"RAW\"}' --json '{\"values\":[[\"a\",\"b\"]]}'" })  # (needs confirmation)
+# Append rows:
+gws_run({ command: "sheets spreadsheets values append --params '{\"spreadsheetId\":\"ID\",\"range\":\"Sheet1!A:H\",\"valueInputOption\":\"RAW\",\"insertDataOption\":\"INSERT_ROWS\"}' --json '{\"values\":[[\"x\",\"y\"]]}'" })  # (needs confirmation)
 ```
 
-### Docs, Slides, People, Chat, Forms, Keep, Meet
-Use `gws_discover({ service: "SERVICE_NAME" })` to explore available operations for any service.
+### Drive  (READ ONLY — destructive ops are blocked)
+```
+gws_run({ command: "drive files list --params '{\"q\":\"name contains '\\''report'\\''\",\"fields\":\"files(id,name)\"}' --format=json" })  # Search
+gws_run({ command: "drive files get --params '{\"fileId\":\"FILE_ID\",\"fields\":\"id,name,trashed\"}' --format=json" })                  # Metadata
+gws_run({ command: "drive files download --params '{\"fileId\":\"FILE_ID\"}'" })                                                          # Download (e.g. a CSV)
+```
+⚠️ **`drive files delete`, `drive files trash`, and trash-via-update are BLOCKED by policy and will be rejected.** Two Google Sheets were lost this way. To empty a spreadsheet, use `sheets spreadsheets values clear` (above) — that wipes the cells WITHOUT touching the file. Never try to delete or trash a Drive file to "reset" it.
+
+### Calendar / Docs / Slides / Forms / Chat
+Use `gws_discover({ service: "SERVICE_NAME" })` then `gws_help` to get exact operations + syntax before calling.
 
 ## Write Operation Confirmation Flow
 
