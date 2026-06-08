@@ -25,6 +25,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { execFile } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import { DATA_DIR } from './config.js';
@@ -99,7 +100,8 @@ function isDeniedDriveOp(args: string[]): boolean {
 function sanitizeArgs(args: string[]): { ok: true } | { ok: false; reason: string } {
   if (args.length === 0) return { ok: false, reason: 'empty args' };
   if (!ALLOWED_SERVICES.has(args[0])) return { ok: false, reason: `service not allowed: ${args[0]}` };
-  if (isDeniedDriveOp(args)) return { ok: false, reason: 'destructive Drive file op denied (delete/trash blocked by policy)' };
+  if (isDeniedDriveOp(args))
+    return { ok: false, reason: 'destructive Drive file op denied (delete/trash blocked by policy)' };
   for (const a of args) {
     const lower = a.toLowerCase();
     if (FORBIDDEN_FLAG_PREFIXES.some((p) => lower === p || lower.startsWith(p + '='))) {
@@ -129,10 +131,18 @@ function runGwsSerialized(args: string[]): Promise<GwsResult> {
   return next;
 }
 
+// Pin gws to the credentials.json file (client_id/secret/refresh_token) rather
+// than the keyring, so a re-consent that rewrites credentials.json (e.g. the
+// post-incident downscope) immediately changes the proxy's effective scopes —
+// no keyring re-sync. Falls back to gws's own auth if the file is unset/missing.
+const GWS_CREDS_FILE = process.env.GWS_CREDENTIALS_FILE || path.join(os.homedir(), '.config', 'gws', 'credentials.json');
+
 function runGws(args: string[]): Promise<GwsResult> {
   const start = Date.now();
+  const childEnv = { ...process.env };
+  if (fs.existsSync(GWS_CREDS_FILE)) childEnv.GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE = GWS_CREDS_FILE;
   return new Promise((resolve) => {
-    execFile(GWS_BIN, args, { timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(GWS_BIN, args, { timeout: 60_000, maxBuffer: 8 * 1024 * 1024, env: childEnv }, (err, stdout, stderr) => {
       const e = err as (Error & { code?: number }) | null;
       resolve({
         stdout: stdout?.toString() ?? '',
