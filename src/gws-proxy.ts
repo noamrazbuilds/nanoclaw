@@ -78,9 +78,28 @@ const WRITE_HINTS = [
 // Flags that could repoint auth/config/credentials — never allowed from a container.
 const FORBIDDEN_FLAG_PREFIXES = ['--token', '--config', '--credentials', '--auth', '--account'];
 
+// HARD-DENY destructive Drive/Docs file operations. No scheduled task or agent
+// workflow needs to delete or trash Drive FILES (sheet edits use the `sheets`
+// service: values clear/update; email cleanup uses `gmail ... trash`). Two Google
+// Sheets were silently lost (concert 2026-05, quote-log 2026-05) — root cause never
+// proven, but the agent's OAuth carries full `auth/drive` scope (delete capability)
+// and scheduled tasks auto-confirm writes. This makes accidental/agentic Drive
+// file deletion physically impossible through the proxy, regardless of token scope.
+// Matched as `<service> <resource> <verb>` (e.g. `drive files delete`,
+// `drive files update` with trashed=true). gmail trash is unaffected (different svc).
+function isDeniedDriveOp(args: string[]): boolean {
+  if (args[0] !== 'drive') return false;
+  const joined = args.join(' ').toLowerCase();
+  if (/\bfiles?\b.*\b(delete|trash|emptytrash|empty-trash)\b/.test(joined)) return true;
+  // `drive files update ... trashed: true` (the trash-via-update path)
+  if (/\bfiles?\b.*\bupdate\b/.test(joined) && /trashed["'\s:=]+true/.test(joined)) return true;
+  return false;
+}
+
 function sanitizeArgs(args: string[]): { ok: true } | { ok: false; reason: string } {
   if (args.length === 0) return { ok: false, reason: 'empty args' };
   if (!ALLOWED_SERVICES.has(args[0])) return { ok: false, reason: `service not allowed: ${args[0]}` };
+  if (isDeniedDriveOp(args)) return { ok: false, reason: 'destructive Drive file op denied (delete/trash blocked by policy)' };
   for (const a of args) {
     const lower = a.toLowerCase();
     if (FORBIDDEN_FLAG_PREFIXES.some((p) => lower === p || lower.startsWith(p + '='))) {
