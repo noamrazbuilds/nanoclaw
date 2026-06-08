@@ -175,6 +175,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     const taskModel = getConfig().allowModelDelegation ? taskModelOverride(keep) : undefined;
     // C6: honest-failure enforcement scope for this run.
     const requiredTools = taskRequiredTools(keep);
+    const taskName = taskLabel(keep);
     const turnStart = new Date().toISOString();
 
     const query = config.provider.query({
@@ -194,7 +195,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // C4 part 3: suppress intermediate send_message for suppress_chat_output tasks.
     setSuppressChatOutput(batchSuppressesChat(keep));
     try {
-      let result = await processQuery(query, routing, processingIds, config.providerName, requiredTools, turnStart);
+      let result = await processQuery(query, routing, processingIds, config.providerName, requiredTools, turnStart, taskName);
 
       // C1: one-shot credit-error fallback. processQuery suppressed the raw
       // credit error; if a fallback model is configured, notify the user and
@@ -211,6 +212,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
           config.providerName,
           requiredTools,
           turnStart,
+          taskName,
         );
         if (result.creditError) log('Fallback model also reported a credit error — surfacing, no further retry');
       } else if (result.creditError) {
@@ -246,6 +248,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
             config.providerName,
             requiredTools,
             turnStart,
+            taskName,
           );
           if (fb.continuation) {
             continuation = fb.continuation;
@@ -324,6 +327,31 @@ function taskRequiredTools(batch: MessageInRow[]): RequiredTool[] {
     if (rt.length) return rt;
   }
   return [];
+}
+
+/**
+ * A short human label for a task in the batch — used to identify WHICH task an
+ * honest-failure refers to (e.g. "Weekly Concert Spreadsheet Update"). Prefers
+ * an explicit `name`/`task_name` in the content JSON, else the first meaningful
+ * line of the prompt (markdown heading stripped), truncated.
+ */
+function taskLabel(batch: MessageInRow[]): string | undefined {
+  for (const m of batch) {
+    if (m.kind !== 'task') continue;
+    try {
+      const c = JSON.parse(m.content) as { name?: string; task_name?: string; prompt?: string };
+      if (typeof c.name === 'string' && c.name.trim()) return c.name.trim().slice(0, 80);
+      if (typeof c.task_name === 'string' && c.task_name.trim()) return c.task_name.trim().slice(0, 80);
+      const prompt = typeof c.prompt === 'string' ? c.prompt : '';
+      for (const raw of prompt.split('\n')) {
+        const line = raw.replace(/^#+\s*/, '').trim();
+        if (line) return line.slice(0, 80);
+      }
+    } catch {
+      /* non-JSON task content — no label */
+    }
+  }
+  return undefined;
 }
 
 /** C4 part 2: the per-task model override carried in a task's content JSON, if any. */
@@ -413,6 +441,7 @@ async function processQuery(
   providerName: string,
   requiredTools: RequiredTool[] = [],
   turnStart?: string,
+  taskName?: string,
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
   let done = false;
@@ -560,8 +589,9 @@ async function processQuery(
               thread_id: routing.threadId,
               content: JSON.stringify({
                 text:
-                  `[honest-failure-override] This scheduled task reported completion but did not invoke its ` +
-                  `required tool(s): ${unmet.join(', ')}. Treating as a failure — the reported result was not delivered.`,
+                  `⚠️ [honest-failure] Scheduled task ${taskName ? `“${taskName}”` : '(unnamed)'} reported completion but ` +
+                  `did not actually invoke its required tool(s): ${unmet.join(', ')}. ` +
+                  `Treating as a failure — the reported result was NOT delivered. Re-run it or check why the tool failed.`,
               }),
             });
           } else {
