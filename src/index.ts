@@ -18,6 +18,7 @@ import { startHostSweep, stopHostSweep } from './host-sweep.js';
 import { routeInbound, routeReaction } from './router.js';
 import { startOAuthRefreshMonitor, stopOAuthRefreshMonitor } from './oauth-refresh.js';
 import { startArena, stopArena } from './modules/arena/index.js';
+import { closeMessageArchive } from './message-archive.js';
 import { log } from './log.js';
 
 // Response + shutdown registries live in response-registry.ts to break the
@@ -213,6 +214,7 @@ async function shutdown(signal: string): Promise<void> {
   stopHostSweep();
   stopOAuthRefreshMonitor();
   await stopArena();
+  closeMessageArchive();
   await stopCliServer();
   try {
     await teardownChannelAdapters();

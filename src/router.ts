@@ -30,6 +30,7 @@ import { findSessionForAgent } from './db/sessions.js';
 import { startTypingRefresh, stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
 import { resolveSession, writeSessionMessage, writeSessionReaction, writeOutboundDirect } from './session-manager.js';
+import { archiveInboundMessage } from './message-archive.js';
 import { wakeContainer } from './container-runner.js';
 import { getSession } from './db/sessions.js';
 import type { AgentGroup, MessagingGroup, MessagingGroupAgent } from './types.js';
@@ -269,6 +270,29 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
   //    avoids the extra await).
   const parsed = safeParseContent(event.message.content);
   const messageText = parsed.text ?? '';
+
+  // Central message archive: mirror every inbound message in a known chat into
+  // data/archive.db (host = sole writer, DELETE mode) so scheduled tasks can
+  // query recent messages across all chats + search history. Best-effort —
+  // never blocks routing. See src/message-archive.ts.
+  try {
+    const c = JSON.parse(event.message.content) as Record<string, unknown>;
+    archiveInboundMessage({
+      channelType: event.channelType,
+      platformId: event.platformId,
+      chatName: mg.name,
+      isGroup: mg.is_group === 1,
+      messageId: event.message.id,
+      sender: typeof c.sender === 'string' ? c.sender : null,
+      senderName: typeof c.senderName === 'string' ? c.senderName : null,
+      text: messageText,
+      timestamp: event.message.timestamp,
+      fromMe: c.fromMe === true,
+      isBotMessage: c.isBotMessage === true,
+    });
+  } catch {
+    /* archiving is best-effort */
+  }
 
   let engagedCount = 0;
   let accumulatedCount = 0;

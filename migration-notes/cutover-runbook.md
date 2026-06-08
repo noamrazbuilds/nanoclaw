@@ -91,6 +91,33 @@ The Default Agent is already `mode all`; v1's per-folder agents (`whatsapp-antho
 
 WhatsApp: text · image · sticker · voice · reaction. Telegram: voice. Scheduled task: verify next-run lands. Tail `logs/nanoclaw.error.log` ~30 min. **First spawn:** watch for the OneCLI selective-mode 401 above.
 
+## POST-CUTOVER STATE (2026-06-08, after live smoke)
+
+v2 is LIVE (service → `~/nanoclaw-v2`). Pipeline verified end-to-end on WhatsApp + Telegram. Issues found on first real run and **fixed live**:
+- **Container image was never built** in the worktree → built `nanoclaw-agent-v2-1e478a5f:latest` (exit 125/127 before).
+- **v1 transcript resume crash** (API 400 on bad tool_use.id) → cleared all migrated `continuation:*` rows; sessions start fresh (workspace memory intact).
+- **WhatsApp auth-wipe on clean shutdown** (deleted keystore every restart) → fixed close-handler; restored keystore from `~/NanoClaw/store/auth`.
+- **Cold-DM owner-spam on shared number** (every contact DM escalated to owner) → DMs engage only for owner self-chat (or dedicated-number installs); purged 10 stray cold-DM groups.
+- **Lost attachments** (saved to unmounted `data/attachments`) → now base64-staged into session inbox (canonical v2 shape); the bug affected your legal PDFs.
+- **Path drift** `/workspace/group`→`/workspace/agent` → rewrote 42 group files + 3 skills + migrated task prompts.
+- **Ambient monitoring was OFF** (all wirings `drop`) → set `accumulate` on all 36 (forward coverage).
+- **No searchable history** → built `data/archive.db` (FTS5, 19,450 msgs), mounted read-only into owner groups + documented search in their CLAUDE.local.md.
+- **No python3 in base image** → added python3/venv/pip (rebuilt image).
+
+⚠️ **WhatsApp adapter fixes (auth-wipe, cold-DM, attachment) are working-tree-only** — must be pushed to `origin/channels` or a reinstall loses them. (task #26)
+
+### Remaining capability PORTS (scheduled tasks fail until these land; user chose to leave tasks running)
+1. **GWS/Gmail integration** — v2 vault has only the Anthropic secret; no Google creds, no Gmail/Drive/Sheets tooling. v1's `gws`-CLI MCP integration ([[project_gws_integration]]) isn't ported. Blocks: Morning Triage, Daily Update, Concert. Needs Google OAuth (user) + gws CLI in container + MCP wiring.
+2. **Central message store** — v2 has no aggregate message DB (v1 had `messages.db`). `accumulate` writes per-session (36 scattered inbound.dbs); `archive.db` is frozen history. Triage/daily-update "scan recent unread across all chats" needs a central live store or a cross-session aggregator.
+3. **PKA venv** — base image now has python3.11, but the host venv was built for 3.12 → packages won't load in-container. Needs venv rebuilt for the container python (or PKA restructured to `packages_pip`). Plus session-review subagent can't see `/workspace/extra/pka` (Task-tool cwd/additionalDirectories — run review in main context).
+
+### Other deferred (config/decision)
+- F2 AnyList: vendor ready (`~/NanoClaw/vendor/anylist-mcp`), owner `mcp_servers={}`; needs wiring + creds location.
+- F3 link-to-audio: not enabled; `link2audio.py` still has v1 `/workspace/ipc` delivery paths.
+- C4 daily-update 48h clamp (depends on daily-update working first); C6 concert `required_tools`.
+- Remove stale `porter-*` worktrees.
+- All 3 owner OneCLI agents are `selective` mode — flip to `all` (or assign secrets) once Google creds are in the vault.
+
 ## Rollback
 
 Stop service; restore `store/messages.db` from the frozen snapshot; `git -C ~/NanoClaw checkout main@{pre-cutover}` (or the recorded pre-cutover sha); restart. v1 binary still on disk.
