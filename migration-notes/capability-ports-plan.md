@@ -1,5 +1,7 @@
 # Scheduled-task capability ports — plan (2026-06-08)
 
+> **✅ ALL THREE CAPABILITIES DONE + VERIFIED (2026-06-08).** (B) central message store — `src/message-archive.ts` host-archiver into `data/archive.db`, verified live (real traffic). (C) PKA — python3 in base image + task-path fixes + run-in-main-context, verified in-container. (A) GWS — Option B host-proxy (`src/gws-proxy.ts` + container `gws-mcp-stdio.ts` + `google-workspace` skill), verified end-to-end container→proxy→gws→Gmail; required UFW `allow in on docker0 to any port 7850` (applied). Remaining = config/ops only: daily_update `config.json` init (needs delivery prefs), push WhatsApp adapter fixes to origin/channels, C4/C6 task tweaks, worktree cleanup, PKA embeddings venv (non-scheduled-task).
+
 Deliberate next phase after cutover: trace every migrated scheduled task to its v2
 dependencies, then port the missing capabilities. Phase A (this matrix) → Phase B
 (design, gauntlet the consequential ones) → Phase C (implement + verify).

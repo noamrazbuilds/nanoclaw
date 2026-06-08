@@ -52,6 +52,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         tini \
         unzip \
         python3 \
+        ffmpeg \
         python3-venv \
         python3-pip \
     && if [ "$INSTALL_CJK_FONTS" = "true" ]; then \

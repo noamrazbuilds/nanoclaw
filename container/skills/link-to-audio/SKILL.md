@@ -12,9 +12,9 @@ Convert web articles into audio voice notes. Extracts the main content (strippin
 **You MUST use `link2audio.py` for ALL link-to-audio requests. This is not optional.**
 
 - Do NOT call TTS directly (no calling tts.py, no raw ffmpeg, no manual chunking)
-- Do NOT send audio chunks individually via IPC
+- Do NOT send audio chunks individually; send only the final file via send_file
 - Do NOT implement your own extraction/TTS/mixing pipeline
-- The script handles everything: extraction, chunking, TTS, concatenation, background mixing, and IPC delivery
+- The script handles extraction, chunking, TTS, concatenation, background mixing; YOU deliver the final file via send_file
 - Your ONLY job is to: (1) parse the user's message for parameters, (2) run the script with the right flags, (3) report the result
 
 If the script fails, report the error. Do not try to work around it by doing the steps manually.
@@ -77,7 +77,7 @@ python3 /home/node/.claude/skills/link-to-audio/scripts/link2audio.py \
   --bg-volume 0.12
 ```
 
-The script handles IPC delivery internally. Do NOT send the audio file yourself via send_message after running the script — it already did that.
+The script does NOT deliver the audio — it prints a JSON result with `output_path`. After it succeeds, YOU must send that file to the user via the `send_file` MCP tool (path = the result's `output_path`).
 
 The script prints progress to stdout and outputs a final JSON result line.
 

@@ -15,6 +15,7 @@ import {
   CONTAINER_INSTALL_LABEL,
   DATA_DIR,
   GROUPS_DIR,
+  LITELLM_API_KEY,
   ONECLI_API_KEY,
   ONECLI_URL,
   TIMEZONE,
@@ -410,6 +411,13 @@ async function buildContainerArgs(
   // Environment — only vars read by code we don't own.
   // Everything NanoClaw-specific is in container.json (read by runner at startup).
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // LiteLLM access for in-container features that route through it:
+  // generate_image (F5), the link-to-audio/speak TTS skill (F3), and any other
+  // LiteLLM-backed tool. Default host is the bridge gateway; the key auths to
+  // the proxy. Without these, those features fall back to sk-placeholder and 401.
+  args.push('-e', `LITELLM_HOST=${process.env.LITELLM_HOST || 'http://host.docker.internal:4000'}`);
+  if (LITELLM_API_KEY) args.push('-e', `LITELLM_API_KEY=${LITELLM_API_KEY}`);
 
   // Provider-contributed env vars (e.g. XDG_DATA_HOME, OPENCODE_*, NO_PROXY).
   if (providerContribution.env) {

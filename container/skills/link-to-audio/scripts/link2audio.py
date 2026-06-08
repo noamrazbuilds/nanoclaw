@@ -28,7 +28,7 @@ import time
 
 # --- Background audio mixing constants ---
 
-AMBIENT_AUDIO_DIR = "/ambient-audio"
+AMBIENT_AUDIO_DIR = "/workspace/extra/ambient-audio"
 
 BG_VOLUME_DEFAULTS = {
     "brown-noise":    0.10,
@@ -375,7 +375,7 @@ def extract_article(url, extract_script):
 def main():
     parser = argparse.ArgumentParser(description="Link-to-Audio: URL to voice note")
     parser.add_argument("--url", required=True, help="Article URL")
-    parser.add_argument("--chat-jid", required=True, help="Chat JID for delivery")
+    parser.add_argument("--chat-jid", required=False, default=None, help="(v2: unused — agent delivers via send_file)")
     parser.add_argument("--ipc-dir", default="/workspace/ipc/messages",
                         help="IPC messages directory")
     parser.add_argument("--output-dir", default="/workspace/agent/audio",
@@ -485,8 +485,9 @@ def main():
     file_size_mb = file_size / (1024 * 1024)
     print(f"Audio ready: {output_path} ({file_size_mb:.1f} MB)")
 
-    # Step 5: Send via IPC
-    send_audio_ipc(output_path, args.chat_jid, args.ipc_dir)
+    # Step 5: delivery is the agent's job in v2 — the script outputs the
+    # file path in the JSON result below; the agent sends it via send_file.
+    # (v1 wrote an IPC message here; v2 has no /workspace/ipc.)
 
     # Output success result
     result = {
