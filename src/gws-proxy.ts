@@ -135,7 +135,8 @@ function runGwsSerialized(args: string[]): Promise<GwsResult> {
 // than the keyring, so a re-consent that rewrites credentials.json (e.g. the
 // post-incident downscope) immediately changes the proxy's effective scopes —
 // no keyring re-sync. Falls back to gws's own auth if the file is unset/missing.
-const GWS_CREDS_FILE = process.env.GWS_CREDENTIALS_FILE || path.join(os.homedir(), '.config', 'gws', 'credentials.json');
+const GWS_CREDS_FILE =
+  process.env.GWS_CREDENTIALS_FILE || path.join(os.homedir(), '.config', 'gws', 'credentials.json');
 
 function runGws(args: string[]): Promise<GwsResult> {
   const start = Date.now();
