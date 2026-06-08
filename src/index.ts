@@ -19,6 +19,7 @@ import { routeInbound, routeReaction } from './router.js';
 import { startOAuthRefreshMonitor, stopOAuthRefreshMonitor } from './oauth-refresh.js';
 import { startArena, stopArena } from './modules/arena/index.js';
 import { closeMessageArchive } from './message-archive.js';
+import { startGwsProxy, stopGwsProxy } from './gws-proxy.js';
 import { log } from './log.js';
 
 // Response + shutdown registries live in response-registry.ts to break the
@@ -197,6 +198,11 @@ async function main(): Promise<void> {
   // ARENA_ENABLED). Self-contained module with its own data/arena.db + cron.
   await startArena();
 
+  // 10. GWS proxy — host runs the gws binary (glibc 2.39); containers forward
+  // Google Workspace ops here over host.docker.internal. No-op unless
+  // GWS_PROXY_TOKEN is set. See src/gws-proxy.ts.
+  startGwsProxy();
+
   log.info('NanoClaw running');
 }
 
@@ -214,6 +220,7 @@ async function shutdown(signal: string): Promise<void> {
   stopHostSweep();
   stopOAuthRefreshMonitor();
   await stopArena();
+  stopGwsProxy();
   closeMessageArchive();
   await stopCliServer();
   try {
