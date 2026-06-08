@@ -137,5 +137,5 @@ Files are picked up automatically on next use — no restart needed.
 
 - Max article size for immediate generation: ~60,000 chars (~9,000 words). For longer articles, ask the user to confirm before generating.
 - The audio is in OGG Opus format (native for WhatsApp and Telegram voice notes).
-- Output files are saved in `/workspace/group/audio/` for IPC access.
+- Output files are saved in `/workspace/agent/audio/` for IPC access.
 - This skill reuses the TTS engine from the /speak skill — same backends and voices are available.

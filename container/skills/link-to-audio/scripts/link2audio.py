@@ -4,7 +4,7 @@ Link-to-Audio: Extract article from URL, convert to TTS audio, send via IPC.
 
 Usage:
   python3 link2audio.py --url "https://example.com/article" --chat-jid "jid" \
-    --ipc-dir /workspace/ipc/messages --output-dir /workspace/group/audio
+    --ipc-dir /workspace/ipc/messages --output-dir /workspace/agent/audio
 
 Options:
   --url URL             Article URL to convert
@@ -378,7 +378,7 @@ def main():
     parser.add_argument("--chat-jid", required=True, help="Chat JID for delivery")
     parser.add_argument("--ipc-dir", default="/workspace/ipc/messages",
                         help="IPC messages directory")
-    parser.add_argument("--output-dir", default="/workspace/group/audio",
+    parser.add_argument("--output-dir", default="/workspace/agent/audio",
                         help="Audio output directory")
     parser.add_argument("--voice", default="shimmer", help="TTS voice")
     parser.add_argument("--backend", default="openai", help="TTS backend")
