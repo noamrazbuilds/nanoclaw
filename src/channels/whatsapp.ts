@@ -424,12 +424,20 @@ registerChannelAdapter('whatsapp', {
       }
     }
 
-    /** Download media from an inbound message, save to /workspace/attachments/. */
+    /**
+     * Download media from an inbound message and return it as base64 `data`.
+     * The host's extractAttachmentFiles (session-manager.ts) stages each
+     * `data` attachment into the session's inbox/<msgId>/ — which IS mounted
+     * into the container at /workspace/inbox/… — and rewrites localPath. This
+     * mirrors the Chat-SDK bridge's attachment shape ({type,name,mimeType,data}).
+     * (Previously this pre-saved to DATA_DIR/attachments and passed a
+     * `localPath` the container couldn't see — files were silently lost.)
+     */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async function downloadInboundMedia(
       msg: WAMessage,
       normalized: any,
-    ): Promise<Array<{ type: string; name: string; localPath: string }>> {
+    ): Promise<Array<{ type: string; name: string; data: string }>> {
       const mediaTypes: Array<{ key: string; type: string; ext: string }> = [
         { key: 'imageMessage', type: 'image', ext: '.jpg' },
         { key: 'videoMessage', type: 'video', ext: '.mp4' },
@@ -439,31 +447,28 @@ registerChannelAdapter('whatsapp', {
         // conversion needed; download + surface them like any other image.
         { key: 'stickerMessage', type: 'sticker', ext: '.webp' },
       ];
-      const results: Array<{ type: string; name: string; localPath: string }> = [];
+      const results: Array<{ type: string; name: string; data: string }> = [];
       for (const { key, type, ext } of mediaTypes) {
         if (!normalized[key]) continue;
         // Voice notes (ptt) are transcribed to text in the message handler, not
         // attached as audio — the agent's Read tool can't interpret audio.
         if (key === 'audioMessage' && normalized.audioMessage?.ptt) continue;
         try {
-          const buffer = await downloadMediaMessage(msg, 'buffer', {});
+          const buffer = (await downloadMediaMessage(msg, 'buffer', {})) as Buffer;
           // documentMessage.fileName is attacker-controlled and rides through
-          // WhatsApp's E2E channel — Meta can't sanitize it server-side. Without
-          // this guard, a `..`-laden fileName escapes attachDir on path.join.
+          // WhatsApp's E2E channel — Meta can't sanitize it server-side. The
+          // host re-validates the name in extractAttachmentFiles, but sanitize
+          // here too so the agent-facing name is clean.
           const rawFilename = normalized[key].fileName;
           const fallback = `${type}-${Date.now()}${ext}`;
           const filename = isSafeAttachmentName(rawFilename) ? rawFilename : fallback;
           if (rawFilename && filename !== rawFilename) {
-            log.warn('Refused unsafe attachment filename — would escape attachments dir', {
+            log.warn('Refused unsafe attachment filename', {
               rawFilename,
               replacement: filename,
             });
           }
-          const attachDir = path.join(DATA_DIR, 'attachments');
-          fs.mkdirSync(attachDir, { recursive: true });
-          const filePath = path.join(attachDir, filename);
-          fs.writeFileSync(filePath, buffer);
-          results.push({ type, name: filename, localPath: `attachments/${filename}` });
+          results.push({ type, name: filename, data: buffer.toString('base64') });
           log.info('Media downloaded', { type, filename });
         } catch (err) {
           log.warn('Failed to download media', { type, err });
@@ -556,13 +561,16 @@ registerChannelAdapter('whatsapp', {
         if (connection === 'close') {
           connected = false;
           const reason = (lastDisconnect?.error as { output?: { statusCode?: number } })?.output?.statusCode;
-          // Don't auto-reconnect during shutdown — a parallel connectSocket()
-          // initializes useMultiFileAuthState which can truncate creds.json
-          // mid-write when the process exits, leaving a 0-byte creds file
-          // and forcing a fresh QR pairing on next start.
-          const shouldReconnect = !shuttingDown && reason !== DisconnectReason.loggedOut;
+          // Three distinct close cases — DO NOT conflate them (see #cutover-bug):
+          //   1. loggedOut (401): the linked device was revoked server-side.
+          //      Wipe auth so the next start re-pairs cleanly.
+          //   2. shuttingDown: clean SIGTERM. Leave auth INTACT — wiping here
+          //      forces a fresh QR pairing on every restart.
+          //   3. otherwise: a transient drop — reconnect, keep auth.
+          const isLoggedOut = reason === DisconnectReason.loggedOut;
+          const shouldReconnect = !shuttingDown && !isLoggedOut;
 
-          log.info('WhatsApp connection closed', { reason, shouldReconnect, shuttingDown });
+          log.info('WhatsApp connection closed', { reason, shouldReconnect, shuttingDown, isLoggedOut });
 
           if (shouldReconnect) {
             log.info('Reconnecting...');
@@ -574,6 +582,9 @@ registerChannelAdapter('whatsapp', {
                 });
               }, RECONNECT_DELAY_MS);
             });
+          } else if (!isLoggedOut) {
+            // Clean shutdown — keep credentials for the next start.
+            log.info('WhatsApp connection closed for shutdown — auth preserved');
           } else {
             log.info('WhatsApp logged out');
             // Delete auth credentials immediately. Keeping stale credentials
@@ -710,6 +721,8 @@ registerChannelAdapter('whatsapp', {
               : rawSender;
             const senderName = msg.pushName || sender.split('@')[0];
             const fromMe = msg.key.fromMe || false;
+            // Is this the owner's self-chat (messaging their own number)?
+            const isSelfChat = !!botPhoneJid && chatJid === botPhoneJid;
             // Filter bot's own messages to prevent echo loops.
             // In self-chat (user messaging their own number), all messages have
             // fromMe=true — use sentMessageCache to distinguish bot echoes from
@@ -717,7 +730,6 @@ registerChannelAdapter('whatsapp', {
             // filter is correct since the user's phone messages shouldn't wake
             // the agent in third-party conversations.
             if (fromMe) {
-              const isSelfChat = botPhoneJid && chatJid === botPhoneJid;
               if (!isSelfChat) continue;
               if (sentMessageCache.has(msg.key.id || '')) continue;
             }
@@ -749,15 +761,20 @@ registerChannelAdapter('whatsapp', {
             // phone JID and LID (#2560).
             const botMentionedInGroup = isGroup && isBotMentionedInGroup(normalized, botPhoneJid, botLidUser);
 
+            // DM engagement policy:
+            //  - Dedicated bot number (ASSISTANT_HAS_OWN_NUMBER): every DM is
+            //    addressed to the bot → treat as a mention (original behavior).
+            //  - Shared personal number: only the owner's self-chat engages.
+            //    Contact DMs to the user's own number are NOT for the bot —
+            //    treat as plain chatter so the router drops them silently
+            //    (no cold-DM owner-approval spam, no auto-create).
+            const dmEngages = ASSISTANT_HAS_OWN_NUMBER || isSelfChat;
+
             const inbound: InboundMessage = {
               id: msg.key.id || `wa-${Date.now()}`,
               kind: 'chat',
-              // DMs are addressed to the bot by definition. Mark them as
-              // platform-confirmed mentions so the router auto-creates an
-              // approval-required messaging_group when the chat is unknown,
-              // instead of silently dropping. In groups, only an explicit
-              // @-mention counts.
-              isMention: computeIsMention(isGroup, botMentionedInGroup),
+              // Groups: only an explicit @-mention counts. DMs: per dmEngages.
+              isMention: isGroup ? computeIsMention(true, botMentionedInGroup) : dmEngages ? true : undefined,
               isGroup,
               content: {
                 text: content,
