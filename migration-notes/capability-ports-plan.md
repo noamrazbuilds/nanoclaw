@@ -55,3 +55,31 @@ v1 = MCP server wrapping the `gws` CLI ([[project_gws_integration]]). Port: (1) 
 Scheduled-task scripts (`inbox_classify.py`, `task_query.py`, `catalog.py`, `onboarding.py`) are **stdlib-only** → python3 (✓ added) runs them; venv (httpx/mcp/cryptography) is only for `embed.py` (embeddings — not a scheduled-task dep → defer). Fixes: (1) task prompts use HOST path `/home/nanoclaw/pka/scripts/` → rewrite to `/workspace/extra/pka/scripts/`; (2) Task **subagents** (consolidation/session-review) need mount read access — verify/extend additionalDirectories or run in main context; (3) embeddings venv = follow-up.
 
 ## Phase C — implement + verify each task end-to-end.
+
+---
+
+## Post-cutover finding (2026-06-09): migrated task prompts had EMPTY template slots
+
+Symptom: Morning Triage failed on both data sources — "Gmail: gws proxy 400" and
+"WhatsApp: Database path not configured." Root cause was NOT the capabilities
+(GWS + archive.db were ready) but the **task prompt itself**: v1 filled certain
+slots by runtime template substitution, and the migrated *static* prompt carried
+the collapsed/empty slots:
+- `"...using ⟨ ⟩ or equivalent read operation"` (empty Gmail tool)
+- `"Query the messages database at ⟨ ⟩:"` (empty WhatsApp DB path → the "not configured" error)
+- `"Use ⟨ ⟩ to deliver"` (empty send tool)
+
+Fix (applied to the triage task content in the owner session inbound.db): point
+the slots at the actual v2 capabilities —
+- Gmail → `gws_run({command: "gmail +triage --query 'is:unread newer_than:1d'"})`
+- WhatsApp → read-only query against `/workspace/extra/archive.db` (the central
+  message store; `messages` table, `is_from_me=0`, `timestamp > now-12h`)
+- send → the `send_message` MCP tool
+
+Verified: `gmail +triage` returns real unread mail through the proxy; archive has
+266 recent non-self messages; archive.db mounted into the triage group. **Only the
+triage task had empty slots** (a swept check found no others; other tasks
+reference Sheets/Drive, not a message DB). **Lesson for future migrations:** after
+porting capabilities, grep migrated task prompts for empty-slot signatures
+(`"at :"`, `"using  or"`, `"Use  to"`, double-spaces in instruction context) —
+v1 runtime templating leaves blanks the new static prompt won't fill itself.
