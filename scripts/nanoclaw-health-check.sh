@@ -31,12 +31,35 @@ tg_alert() {
     log "WARN: No TELEGRAM_BOT_TOKEN set, cannot send alert"
     return
   fi
-  curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-    -H "Content-Type: application/json" \
-    -d "{\"chat_id\": \"${ALERT_CHAT_ID}\", \"text\": \"🔧 NanoClaw Watchdog\\n${msg}\", \"parse_mode\": \"Markdown\"}" \
-    --max-time 10 \
-    --silent \
-    --output /dev/null || true
+  # jq builds the JSON so $msg is properly escaped (a stray quote/backslash in an
+  # error detail would otherwise malform the body). Try Markdown first; if
+  # Telegram rejects it (HTTP 400 — bad markdown), retry as PLAIN TEXT so the
+  # alert-of-last-resort still reaches the user instead of silently failing.
+  local text="🔧 NanoClaw Watchdog
+${msg}"
+  local body code
+  if command -v jq >/dev/null 2>&1; then
+    body="$(jq -nc --arg c "$ALERT_CHAT_ID" --arg t "$text" '{chat_id:$c, text:$t, parse_mode:"Markdown"}')"
+  else
+    # Fallback if jq is absent: minimal manual escaping of " and newlines.
+    local esc="${msg//\\/\\\\}"; esc="${esc//\"/\\\"}"; esc="${esc//$'\n'/\\n}"
+    body="{\"chat_id\":\"${ALERT_CHAT_ID}\",\"text\":\"🔧 NanoClaw Watchdog\\n${esc}\",\"parse_mode\":\"Markdown\"}"
+  fi
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST \
+    "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+    -H "Content-Type: application/json" -d "$body" 2>/dev/null || echo 000)
+  if [[ "$code" == "400" ]]; then
+    log "Telegram Markdown rejected (400); retrying alert as plain text"
+    local plain
+    if command -v jq >/dev/null 2>&1; then
+      plain="$(jq -nc --arg c "$ALERT_CHAT_ID" --arg t "$text" '{chat_id:$c, text:$t}')"
+    else
+      local esc2="${msg//\\/\\\\}"; esc2="${esc2//\"/\\\"}"; esc2="${esc2//$'\n'/\\n}"
+      plain="{\"chat_id\":\"${ALERT_CHAT_ID}\",\"text\":\"🔧 NanoClaw Watchdog\\n${esc2}\"}"
+    fi
+    curl -s --max-time 10 -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+      -H "Content-Type: application/json" -d "$plain" --output /dev/null || true
+  fi
 }
 
 # --- Check nanoclaw ---

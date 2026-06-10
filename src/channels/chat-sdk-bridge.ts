@@ -123,6 +123,33 @@ export function splitForLimit(text: string, limit: number): string[] {
 export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter {
   const { adapter } = config;
   const transformText = (t: string): string => (config.transformOutboundText ? config.transformOutboundText(t) : t);
+
+  // Defense-in-depth for the user-facing reply path. `transformText` (for
+  // Telegram, the markdown sanitizer) PREVENTS most bad-markdown sends, but it's
+  // heuristic — a residual case still makes the adapter's send fail (e.g.
+  // Telegram 400 on malformed markdown), and the host would then retry the same
+  // bytes MAX times and permanently DROP the reply (delivery.ts) while the agent
+  // believes it sent. This wraps the send: if the formatted post throws, retry
+  // ONCE with all markdown-significant characters neutralized, so the message
+  // degrades to plain text instead of vanishing. Generic across channels.
+  const stripMarkdown = (t: string): string => t.replace(/[*_`~[\]()>#]/g, '');
+  const postTextWithFallback = async (
+    tid: string,
+    chunk: string,
+    files?: Array<{ data: Buffer; filename: string }>,
+  ): Promise<{ id?: string } | undefined> => {
+    const payload = files && files.length > 0 ? { markdown: chunk, files } : { markdown: chunk };
+    try {
+      return await adapter.postMessage(tid, payload);
+    } catch (err) {
+      const plain = stripMarkdown(chunk);
+      log.warn('chat-sdk: formatted send failed, retrying as plain text', {
+        err: err instanceof Error ? err.message : String(err),
+      });
+      const plainPayload = files && files.length > 0 ? { markdown: plain, files } : { markdown: plain };
+      return await adapter.postMessage(tid, plainPayload);
+    }
+  };
   let chat: Chat;
   let state: SqliteStateAdapter;
   let setupConfig: ChannelSetup;
@@ -518,10 +545,7 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         for (let i = 0; i < chunks.length; i++) {
           const chunk = chunks[i];
           const attachFiles = i === 0 && fileUploads && fileUploads.length > 0;
-          const result = await adapter.postMessage(
-            tid,
-            attachFiles ? { markdown: chunk, files: fileUploads } : { markdown: chunk },
-          );
+          const result = await postTextWithFallback(tid, chunk, attachFiles ? fileUploads : undefined);
           if (i === 0) firstId = result?.id;
         }
         return firstId;
