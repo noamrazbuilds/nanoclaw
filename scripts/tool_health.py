@@ -117,7 +117,10 @@ def tg_alert(text: str) -> None:
         print("tool_health: no TELEGRAM_BOT_TOKEN, cannot alert", file=sys.stderr)
         return
     try:
-        data = urllib.parse.urlencode({"chat_id": chat, "text": text, "parse_mode": "Markdown"}).encode()
+        # No parse_mode: tool names contain underscores (send_file, gws_run) which
+        # break Telegram's Markdown parser (unbalanced italic → HTTP 400). Plain
+        # text is robust; the *…* / `…` markers read fine literally.
+        data = urllib.parse.urlencode({"chat_id": chat, "text": text}).encode()
         urllib.request.urlopen(
             urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data),
             timeout=10,
