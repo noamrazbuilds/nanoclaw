@@ -419,6 +419,17 @@ async function buildContainerArgs(
   args.push('-e', `LITELLM_HOST=${process.env.LITELLM_HOST || 'http://host.docker.internal:4000'}`);
   if (LITELLM_API_KEY) args.push('-e', `LITELLM_API_KEY=${LITELLM_API_KEY}`);
 
+  // Internal host-bridge calls must BYPASS the OneCLI credential gateway. OneCLI
+  // sets HTTP(S)_PROXY + NODE_USE_ENV_PROXY=1 so OUTBOUND API calls (api.anthropic.com,
+  // etc.) get credential injection — but our own host services reached via
+  // host.docker.internal (LiteLLM :4000, gws-proxy :7850, remarkable-proxy :7851)
+  // have their own auth and must NOT be routed through the gateway, which rejects
+  // unknown internal destinations with HTTP 400. Without this, every in-container
+  // fetch() to those bridges fails. NO_PROXY excludes them from proxying.
+  // (api.anthropic.com is NOT listed, so Claude's credential path is unaffected.)
+  args.push('-e', 'NO_PROXY=host.docker.internal,localhost,127.0.0.1');
+  args.push('-e', 'no_proxy=host.docker.internal,localhost,127.0.0.1');
+
   // Provider-contributed env vars (e.g. XDG_DATA_HOME, OPENCODE_*, NO_PROXY).
   if (providerContribution.env) {
     for (const [key, value] of Object.entries(providerContribution.env)) {
