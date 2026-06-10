@@ -73,6 +73,7 @@ Dockerfile/dep changes do.
 These live in `~/.config/systemd/user/` and must be (re)created + enabled:
 - `nanoclaw.service` — the host process. `systemctl --user enable nanoclaw` (auto-start on boot).
 - `nanoclaw-watchdog.{service,timer}` — runs `scripts/nanoclaw-health-check.sh` every 5 min, restarts nanoclaw if down + Telegram-alerts. (script IS in repo; units are not)
+- `nanoclaw-tool-health.{service,timer}` — every 3h, scans the C5 tool-call ledger for integration tools (gws/remarkable/anylist/send_file/generate_image) failing above a threshold; Telegram-alerts on a new break + recovery (script `scripts/tool_health.py` in repo; units machine-local).
 - `nanoclaw-sheet-backup.{service,timer}` — weekly `scripts/backup-sheets.ts` (script in repo; units not). Configure target sheets in `data/sheet-backups/sheets.json`.
 - **Enable linger** so user services run at boot without login: `loginctl enable-linger nanoclaw`.
 
