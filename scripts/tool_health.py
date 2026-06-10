@@ -33,6 +33,13 @@ ROOT = Path(__file__).resolve().parent.parent
 SESSIONS_DIR = ROOT / "data" / "v2-sessions"
 STATE_PATH = ROOT / "data" / ".tool-health-state.json"
 ENV_FILE = ROOT / ".env"
+ERROR_LOG = ROOT / "logs" / "nanoclaw.error.log"
+
+# A permanently-dropped user-facing message currently leaves ONLY this error-log
+# line (delivery.ts give-up branch) — no alert, agent thinks it sent. This marker
+# is the general "fail loud" net: any silent delivery drop (malformed markdown,
+# network, adapter bug) surfaces here.
+DELIVERY_FAIL_MARKER = "Message delivery failed permanently"
 
 # --- tunables ---
 WINDOW_HOURS = 24
@@ -109,6 +116,23 @@ def short(tool: str) -> str:
     return tool.split("__")[-1] if "__" in tool else tool
 
 
+def scan_delivery_failures(prev_offset: int) -> tuple[int, int]:
+    """Read the error log from prev_offset; return (new_failure_count, new_offset).
+    Byte-offset tracking so each permanent-drop is counted once; resets on rotation."""
+    try:
+        size = ERROR_LOG.stat().st_size
+        start = 0 if size < prev_offset else prev_offset  # rotated/truncated → reread
+        with open(ERROR_LOG, "r", errors="replace") as f:
+            f.seek(start)
+            chunk = f.read()
+        return chunk.count(DELIVERY_FAIL_MARKER), start + len(chunk.encode("utf-8", "replace"))
+    except FileNotFoundError:
+        return 0, prev_offset
+    except Exception as e:
+        print(f"tool_health: error-log scan failed: {e}", file=sys.stderr)
+        return 0, prev_offset
+
+
 def tg_alert(text: str) -> None:
     env = load_env(["TELEGRAM_BOT_TOKEN", "WATCHDOG_ALERT_CHAT_ID"])
     token = os.environ.get("TELEGRAM_BOT_TOKEN") or env.get("TELEGRAM_BOT_TOKEN", "")
@@ -138,18 +162,25 @@ def main() -> None:
     agg = scan(args.hours)
     now_flagged = flagged(agg)
 
+    # Load prior state once (flagged set + error-log read offset).
+    try:
+        st = json.loads(STATE_PATH.read_text())
+    except Exception:
+        st = {}
+    prev = set(st.get("flagged", []))
+    prev_offset = int(st.get("errlog_offset", 0))
+
+    # General net: count NEW permanently-dropped messages since last scan.
+    new_drops, new_offset = scan_delivery_failures(prev_offset)
+
     if args.check:
         print(f"window: last {args.hours}h | watched tools seen: {len(agg)} | flagged: {len(now_flagged)}")
         for tool, a in sorted(agg.items()):
             mark = "  <<< FLAGGED" if tool in now_flagged else ""
             print(f"  {short(tool):24} {a['fails']}/{a['total']} failed{mark}")
+        print(f"new permanently-dropped messages since last scan: {new_drops}")
         return
 
-    # Dedup against last run.
-    try:
-        prev = set(json.loads(STATE_PATH.read_text()).get("flagged", []))
-    except Exception:
-        prev = set()
     cur = set(now_flagged)
 
     new_problems = cur - prev
@@ -167,13 +198,24 @@ def main() -> None:
     if recovered:
         tg_alert("✅ *Recovered*: " + ", ".join(f"`{short(t)}`" for t in sorted(recovered)))
 
+    if new_drops > 0:
+        tg_alert(
+            f"🚨 NanoClaw delivery — {new_drops} message(s) were permanently DROPPED "
+            f"(could not be delivered to the user after retries) since the last check. "
+            f"The agent thinks it replied but the message never arrived. Check logs/nanoclaw.error.log "
+            f"for 'Message delivery failed permanently'."
+        )
+
     try:
-        STATE_PATH.write_text(json.dumps({"flagged": sorted(cur),
-                                          "updated_at": datetime.now(timezone.utc).isoformat()}, indent=2))
+        STATE_PATH.write_text(json.dumps({
+            "flagged": sorted(cur),
+            "errlog_offset": new_offset,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }, indent=2))
     except Exception as e:
         print(f"tool_health: state write failed: {e}", file=sys.stderr)
 
-    print(f"OK: flagged={len(cur)} new={len(new_problems)} recovered={len(recovered)}")
+    print(f"OK: flagged={len(cur)} new={len(new_problems)} recovered={len(recovered)} new_drops={new_drops}")
 
 
 if __name__ == "__main__":
