@@ -82,6 +82,7 @@ bind bypasses port-publishing). Per service used:
 - `sudo ufw allow in on docker0 to any port 4000 proto tcp` — LiteLLM
 - `sudo ufw allow in on docker0 to any port 10255 proto tcp` — OneCLI gateway
 - `sudo ufw allow in on docker0 to any port 7850 proto tcp` — GWS proxy
+- `sudo ufw allow in on docker0 to any port 7851 proto tcp` — reMarkable proxy
 (Symptom of a missing rule: container `curl host.docker.internal:<port>` times out.)
 
 ## 9. Per-agent-group config — `container_configs` in `data/v2.db` (NOT in repo)

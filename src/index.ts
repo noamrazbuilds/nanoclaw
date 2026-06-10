@@ -20,6 +20,7 @@ import { startOAuthRefreshMonitor, stopOAuthRefreshMonitor } from './oauth-refre
 import { startArena, stopArena } from './modules/arena/index.js';
 import { closeMessageArchive } from './message-archive.js';
 import { startGwsProxy, stopGwsProxy } from './gws-proxy.js';
+import { startRemarkableProxy, stopRemarkableProxy } from './remarkable-proxy.js';
 import { log } from './log.js';
 
 // Response + shutdown registries live in response-registry.ts to break the
@@ -203,6 +204,11 @@ async function main(): Promise<void> {
   // GWS_PROXY_TOKEN is set. See src/gws-proxy.ts.
   startGwsProxy();
 
+  // 11. reMarkable proxy — host runs rmapi (read-only) + render; containers
+  // fetch pages over host.docker.internal. No-op unless REMARKABLE_PROXY_TOKEN
+  // is set. See src/remarkable-proxy.ts.
+  startRemarkableProxy();
+
   log.info('NanoClaw running');
 }
 
@@ -221,6 +227,7 @@ async function shutdown(signal: string): Promise<void> {
   stopOAuthRefreshMonitor();
   await stopArena();
   stopGwsProxy();
+  stopRemarkableProxy();
   closeMessageArchive();
   await stopCliServer();
   try {
