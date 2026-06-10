@@ -100,10 +100,19 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       continue;
     }
 
-    const ids = messages.map((m) => m.id);
+    // A (one-task-per-run): a turn processes EITHER conversational messages OR a
+    // single scheduled task — never several independent tasks fused into one
+    // prompt. Co-batching unrelated tasks made the agent run a couple and bail,
+    // and collapsed per-task honest-failure attribution onto the wrong task.
+    // Chat is prioritized; remaining tasks stay `pending` and run one at a time
+    // on subsequent iterations (the loop re-polls immediately — no sleep — while
+    // pending messages remain). See selectTurnUnit.
+    const unit = selectTurnUnit(messages);
+
+    const ids = unit.map((m) => m.id);
     markProcessing(ids);
 
-    const routing = extractRouting(messages);
+    const routing = extractRouting(unit);
 
     // Command handling: the host router gates filtered and unauthorized
     // admin commands before they reach the container. The only command
@@ -111,7 +120,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     const normalMessages: MessageInRow[] = [];
     const commandIds: string[] = [];
 
-    for (const msg of messages) {
+    for (const msg of unit) {
       if ((msg.kind === 'chat' || msg.kind === 'chat-sdk') && isClearCommand(msg)) {
         log('Clearing session (resetting continuation)');
         continuation = undefined;
@@ -137,7 +146,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (normalMessages.length === 0) {
       const remainingIds = ids.filter((id) => !commandIds.includes(id));
       if (remainingIds.length > 0) markCompleted(remainingIds);
-      log(`All ${messages.length} message(s) were commands, skipping query`);
+      log(`All ${unit.length} message(s) were commands, skipping query`);
       continue;
     }
 
@@ -173,9 +182,15 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // C4 part 2: honor a scheduled task's per-task model override, but only when
     // the group allows model delegation (migration 016 / allow_model_delegation).
     const taskModel = getConfig().allowModelDelegation ? taskModelOverride(keep) : undefined;
-    // C6: honest-failure enforcement scope for this run.
-    const requiredTools = taskRequiredTools(keep);
-    const taskName = taskLabel(keep);
+    // C6: honest-failure enforcement scope for this run. B (correct attribution):
+    // the required-tools declaration and the task NAME used in the failure alert
+    // must come from the SAME task — otherwise the alert can name a healthy task
+    // while a different one is the real offender (the 2026-06-10 misattribution).
+    const { requiredTools, taskName } = taskEnforcement(keep);
+    // A: under selectTurnUnit a turn is either chat or a single task. When it's a
+    // task turn, the inner follow-up poller must keep it pure (no pushed
+    // follow-ups) so tasks never re-batch into one run.
+    const isTaskTurn = keep.some((m) => m.kind === 'task');
     const turnStart = new Date().toISOString();
 
     const query = config.provider.query({
@@ -195,7 +210,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // C4 part 3: suppress intermediate send_message for suppress_chat_output tasks.
     setSuppressChatOutput(batchSuppressesChat(keep));
     try {
-      let result = await processQuery(query, routing, processingIds, config.providerName, requiredTools, turnStart, taskName);
+      let result = await processQuery(query, routing, processingIds, config.providerName, requiredTools, turnStart, taskName, isTaskTurn);
 
       // C1: one-shot credit-error fallback. processQuery suppressed the raw
       // credit error; if a fallback model is configured, notify the user and
@@ -213,6 +228,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
           requiredTools,
           turnStart,
           taskName,
+          isTaskTurn,
         );
         if (result.creditError) log('Fallback model also reported a credit error — surfacing, no further retry');
       } else if (result.creditError) {
@@ -249,6 +265,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
             requiredTools,
             turnStart,
             taskName,
+            isTaskTurn,
           );
           if (fb.continuation) {
             continuation = fb.continuation;
@@ -319,37 +336,63 @@ function notifyCreditFallback(batch: MessageInRow[], routing: RoutingContext): v
   });
 }
 
-/** C6: the required-tools declaration carried in a task's content JSON, if any. */
-function taskRequiredTools(batch: MessageInRow[]): RequiredTool[] {
-  for (const m of batch) {
-    if (m.kind !== 'task') continue;
-    const rt = parseRequiredTools(m.content);
-    if (rt.length) return rt;
-  }
-  return [];
+/**
+ * A (one-task-per-run): pick the messages to process THIS turn. A turn is either
+ * all non-task messages (chat + ride-along context), or — when no chat is
+ * triggering — exactly ONE task. Remaining tasks stay `pending` and run on later
+ * iterations; trigger=0 context rows are left pending to ride the next chat turn
+ * (accumulate contract). Assumes the accumulate gate already ensured ≥1 trigger=1
+ * row is present, so the returned unit is never empty/non-triggering.
+ *
+ * Why: co-batching independent scheduled tasks into one prompt made the agent
+ * execute a couple and bail, and fused per-task honest-failure attribution. One
+ * task per run restores isolation and makes attribution unambiguous.
+ */
+export function selectTurnUnit(messages: MessageInRow[]): MessageInRow[] {
+  const tasks = messages.filter((m) => m.kind === 'task');
+  if (tasks.length === 0) return messages; // pure conversational batch — unchanged
+  const nonTask = messages.filter((m) => m.kind !== 'task');
+  // Prioritize conversational replies; defer every task to a later turn.
+  if (nonTask.some((m) => m.trigger === 1)) return nonTask;
+  // No triggering chat → run a single task this turn; defer the rest.
+  return [tasks[0]];
 }
 
 /**
- * A short human label for a task in the batch — used to identify WHICH task an
+ * C6 + B: resolve the honest-failure enforcement for a run. The required-tools
+ * declaration and the failure-alert NAME are taken from the SAME task (the first
+ * one declaring required_tools) so the alert can never name a healthy task while
+ * a different one is the real offender. When no task declares required_tools,
+ * there's nothing to enforce; the name falls back to the first task for logging.
+ */
+function taskEnforcement(batch: MessageInRow[]): { requiredTools: RequiredTool[]; taskName: string | undefined } {
+  for (const m of batch) {
+    if (m.kind !== 'task') continue;
+    const rt = parseRequiredTools(m.content);
+    if (rt.length) return { requiredTools: rt, taskName: labelOfMessage(m) };
+  }
+  const firstTask = batch.find((m) => m.kind === 'task');
+  return { requiredTools: [], taskName: firstTask ? labelOfMessage(firstTask) : undefined };
+}
+
+/**
+ * A short human label for a single task — used to identify WHICH task an
  * honest-failure refers to (e.g. "Weekly Concert Spreadsheet Update"). Prefers
  * an explicit `name`/`task_name` in the content JSON, else the first meaningful
  * line of the prompt (markdown heading stripped), truncated.
  */
-function taskLabel(batch: MessageInRow[]): string | undefined {
-  for (const m of batch) {
-    if (m.kind !== 'task') continue;
-    try {
-      const c = JSON.parse(m.content) as { name?: string; task_name?: string; prompt?: string };
-      if (typeof c.name === 'string' && c.name.trim()) return c.name.trim().slice(0, 80);
-      if (typeof c.task_name === 'string' && c.task_name.trim()) return c.task_name.trim().slice(0, 80);
-      const prompt = typeof c.prompt === 'string' ? c.prompt : '';
-      for (const raw of prompt.split('\n')) {
-        const line = raw.replace(/^#+\s*/, '').trim();
-        if (line) return line.slice(0, 80);
-      }
-    } catch {
-      /* non-JSON task content — no label */
+function labelOfMessage(m: MessageInRow): string | undefined {
+  try {
+    const c = JSON.parse(m.content) as { name?: string; task_name?: string; prompt?: string };
+    if (typeof c.name === 'string' && c.name.trim()) return c.name.trim().slice(0, 80);
+    if (typeof c.task_name === 'string' && c.task_name.trim()) return c.task_name.trim().slice(0, 80);
+    const prompt = typeof c.prompt === 'string' ? c.prompt : '';
+    for (const raw of prompt.split('\n')) {
+      const line = raw.replace(/^#+\s*/, '').trim();
+      if (line) return line.slice(0, 80);
     }
+  } catch {
+    /* non-JSON task content — no label */
   }
   return undefined;
 }
@@ -442,6 +485,7 @@ async function processQuery(
   requiredTools: RequiredTool[] = [],
   turnStart?: string,
   taskName?: string,
+  isTaskTurn = false,
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
   let done = false;
@@ -458,9 +502,13 @@ async function processQuery(
   // claim age (see src/host-sweep.ts); if something is truly stuck, the host
   // will kill the container and messages get reset to pending.
   let pollInFlight = false;
-  let endedForCommand = false;
+  // Set when we gracefully end the stream so the OUTER loop re-selects pending
+  // rows (slash commands, or task-isolation under A). The in-flight result still
+  // completes; we just stop accepting pushed follow-ups. Named for the effect,
+  // not the trigger.
+  let endedForReprocess = false;
   const pollHandle = setInterval(() => {
-    if (done || pollInFlight || endedForCommand) return;
+    if (done || pollInFlight || endedForReprocess) return;
     pollInFlight = true;
 
     void (async () => {
@@ -476,7 +524,7 @@ async function processQuery(
         // canonical command path + formatMessagesWithCommands.
         if (pending.some((m) => isRunnerCommand(m))) {
           log('Pending slash command — ending stream so outer loop can process');
-          endedForCommand = true;
+          endedForReprocess = true;
           query.end();
           return;
         }
@@ -490,6 +538,20 @@ async function processQuery(
         // host-generated welcome trigger with null thread vs a Discord DM reply).
         const newMessages = pending.filter((m) => m.kind !== 'system');
         if (newMessages.length === 0) return;
+
+        // A (one-task-per-run), inner-poll half: never fold a scheduled task into
+        // an active stream, and keep a task turn pure. If a task is now pending,
+        // or this run is itself a task turn and anything new arrived, end the
+        // stream (gracefully — the current result still completes) and leave the
+        // rows pending so the outer loop isolates each task into its own turn.
+        // Without this, the outer selectTurnUnit is bypassed: tasks get pushed as
+        // follow-ups and re-batched into one run — exactly the failure A fixes.
+        if (isTaskTurn || newMessages.some((m) => m.kind === 'task')) {
+          log('Task pending (or task turn) — ending stream so the outer loop isolates it');
+          endedForReprocess = true;
+          query.end();
+          return;
+        }
 
         const newIds = newMessages.map((m) => m.id);
         markProcessing(newIds);

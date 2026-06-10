@@ -6,9 +6,13 @@ import { getPendingMessages } from './db/messages-in.js';
 import { getContinuation, setContinuation } from './db/session-state.js';
 import { MockProvider } from './providers/mock.js';
 import { runPollLoop } from './poll-loop.js';
+import { loadConfig } from './config.js';
 
 beforeEach(() => {
   initTestSessionDb();
+  // runPollLoop reads getConfig() (e.g. for model-delegation gating); load the
+  // defaults so the loop doesn't throw "Config not loaded" in tests. Idempotent.
+  loadConfig();
   // Seed a destination so output parsing can resolve "discord-test" → routing
   getInboundDb()
     .prepare(
@@ -270,10 +274,12 @@ describe('poll loop integration', () => {
     await loopPromise.catch(() => {});
   });
 
-  it('handles mixed task + chat batch with correct origin metadata', async () => {
-    // Seed destination for routing lookup
+  it('runs a mixed chat+task batch as separate turns (A: one task per run), both routed correctly', async () => {
+    // A chat and a task are both pending in the same channel session. Under the
+    // one-task-per-run rule the chat is processed first (prioritized) and the
+    // task runs on a later turn — so BOTH produce a correctly-routed output,
+    // rather than being fused into a single combined turn.
     insertMessage('m-chat', { sender: 'Alice', text: 'check this' }, { platformId: 'chan-1', channelType: 'discord' });
-    // Task with same routing — simulates a scheduled task in a channel session
     getInboundDb()
       .prepare(
         `INSERT INTO messages_in (id, kind, timestamp, status, platform_id, channel_type, content)
@@ -285,12 +291,14 @@ describe('poll loop integration', () => {
     const controller = new AbortController();
     const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
 
-    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    // Both the chat turn and the (deferred) task turn should emit output.
+    await waitFor(() => getUndeliveredMessages().length >= 2, 2000);
     controller.abort();
 
     const out = getUndeliveredMessages();
-    expect(out).toHaveLength(1);
-    expect(out[0].platform_id).toBe('chan-1');
+    // Two distinct turns → two outputs (a single co-batched run produced one).
+    expect(out).toHaveLength(2);
+    expect(out.every((m) => m.platform_id === 'chan-1')).toBe(true);
 
     await loopPromise.catch(() => {});
   });

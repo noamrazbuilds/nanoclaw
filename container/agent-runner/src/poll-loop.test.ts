@@ -1,10 +1,29 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from './db/connection.js';
-import { getPendingMessages, markCompleted } from './db/messages-in.js';
+import { getPendingMessages, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { formatMessages, extractRouting } from './formatter.js';
+import { selectTurnUnit } from './poll-loop.js';
 import { MockProvider } from './providers/mock.js';
+
+function row(id: string, kind: string, content: object, trigger: 0 | 1 = 1): MessageInRow {
+  return {
+    id,
+    seq: null,
+    kind,
+    timestamp: '2026-06-10T00:00:00.000Z',
+    status: 'pending',
+    process_after: null,
+    recurrence: null,
+    tries: 0,
+    trigger,
+    platform_id: null,
+    channel_type: null,
+    thread_id: null,
+    content: JSON.stringify(content),
+  };
+}
 
 beforeEach(() => {
   initTestSessionDb();
@@ -273,6 +292,54 @@ describe('origin metadata (from= attribute)', () => {
     const prompt = formatMessages(getPendingMessages());
     expect(prompt).toContain('<system_response');
     expect(prompt).toContain('from="discord-main"');
+  });
+});
+
+describe('selectTurnUnit (A — one task per run)', () => {
+  it('passes a pure chat batch through unchanged', () => {
+    const msgs = [row('m1', 'chat', { text: 'a' }), row('m2', 'chat', { text: 'b' })];
+    expect(selectTurnUnit(msgs).map((m) => m.id)).toEqual(['m1', 'm2']);
+  });
+
+  it('runs exactly one task when several are due together', () => {
+    const msgs = [
+      row('t1', 'task', { prompt: 'USD/ILS' }),
+      row('t2', 'task', { prompt: 'concert' }),
+      row('t3', 'task', { prompt: 'daily update' }),
+    ];
+    const unit = selectTurnUnit(msgs);
+    expect(unit).toHaveLength(1);
+    expect(unit[0].id).toBe('t1'); // first task; the rest stay pending for later turns
+  });
+
+  it('prioritizes triggering chat and defers all tasks', () => {
+    const msgs = [
+      row('t1', 'task', { prompt: 'a task' }),
+      row('m1', 'chat', { text: 'hello' }, 1),
+    ];
+    const unit = selectTurnUnit(msgs);
+    expect(unit.map((m) => m.id)).toEqual(['m1']); // task deferred
+  });
+
+  it('keeps trigger=0 chat context with a triggering chat message', () => {
+    const msgs = [
+      row('c0', 'chat', { text: 'earlier context' }, 0),
+      row('m1', 'chat', { text: 'the mention' }, 1),
+      row('t1', 'task', { prompt: 'a task' }),
+    ];
+    const unit = selectTurnUnit(msgs);
+    expect(unit.map((m) => m.id).sort()).toEqual(['c0', 'm1']); // chat unit; task deferred
+  });
+
+  it('runs a task even when only non-triggering chat context is present', () => {
+    // No trigger=1 chat → a single task runs; the trigger=0 context rides the
+    // next chat turn (left pending), matching the accumulate contract.
+    const msgs = [
+      row('c0', 'chat', { text: 'noise' }, 0),
+      row('t1', 'task', { prompt: 'a task' }),
+    ];
+    const unit = selectTurnUnit(msgs);
+    expect(unit.map((m) => m.id)).toEqual(['t1']);
   });
 });
 
