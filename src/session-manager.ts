@@ -36,6 +36,7 @@ import {
   migrateMessagesInTable,
   migrateReactionsTable,
   upsertReaction,
+  nextEvenSeq,
 } from './db/session-db.js';
 import { log } from './log.js';
 import { computeSkillsHash } from './skills-hash.js';
@@ -129,19 +130,30 @@ export function resolveSession(
   // filesystem walk per resolve (the skills dir is small); matches v1.
   const skillsHash = computeSkillsHash();
 
+  // When the drift safeguard rotates a session, the just-closed session is the
+  // predecessor whose live scheduled tasks must be carried into the fresh one
+  // (see carryForwardPendingTasks). null when there was no prior session.
+  let rotatedPredecessor: Session | null = null;
+
   // agent-shared: single session per agent group, regardless of messaging group
   if (sessionMode === 'agent-shared') {
     const existing = findSessionByAgentGroup(agentGroupId);
-    if (existing && reusableSession(existing, skillsHash)) {
-      return { session: existing, created: false };
+    if (existing) {
+      if (reusableSession(existing, skillsHash)) {
+        return { session: existing, created: false };
+      }
+      rotatedPredecessor = existing;
     }
   } else if (messagingGroupId) {
     const lookupThreadId = sessionMode === 'shared' ? null : threadId;
     // Scope lookup by agent_group_id so fan-out to multiple agents in the
     // same chat doesn't accidentally deliver to the wrong agent's session.
     const existing = findSessionForAgent(agentGroupId, messagingGroupId, lookupThreadId);
-    if (existing && reusableSession(existing, skillsHash)) {
-      return { session: existing, created: false };
+    if (existing) {
+      if (reusableSession(existing, skillsHash)) {
+        return { session: existing, created: false };
+      }
+      rotatedPredecessor = existing;
     }
   }
 
@@ -162,9 +174,105 @@ export function resolveSession(
 
   createSession(session);
   initSessionFolder(agentGroupId, id);
+  // C3 rotation orphan-fix: move live scheduled tasks into the fresh session so
+  // recurring tasks (daily updates, etc.) keep firing across rotations.
+  if (rotatedPredecessor) carryForwardPendingTasks(rotatedPredecessor, agentGroupId, id);
   log.info('Session created', { id, agentGroupId, messagingGroupId, threadId: lookupThreadId, sessionMode });
 
   return { session, created: true };
+}
+
+/**
+ * C3 rotation orphan-fix.
+ *
+ * The drift safeguard (`reusableSession`) rotates a session every 24h (or on a
+ * skill-set change) by marking it 'closed' and creating a fresh one. But a
+ * session's pending recurring tasks live as `kind='task'` rows in *its own*
+ * inbound.db, and the host sweep only ever looks at `status='active'` sessions
+ * (`getActiveSessions`). So on rotation, every scheduled task — the daily
+ * update, reminders, recurrences — is stranded in the old DB nothing sweeps,
+ * and silently stops firing. (Migration 018 already moved the task *audit log*
+ * to the central DB for exactly this reason; the task rows themselves were
+ * missed.)
+ *
+ * Fix: carry the predecessor's live (pending/paused) task rows forward into the
+ * new session's inbound.db, preserving id/series_id/recurrence/process_after so
+ * audit trails and recurrence chains continue uninterrupted. Deduped by id so
+ * re-resolving a session never double-inserts. Best-effort — a failure must not
+ * block session creation, but is logged at error level so the gap is loud, not
+ * silent. As long as each rotation carries forward, the most-recent session
+ * always holds the live tasks and the chain self-heals.
+ */
+export function carryForwardPendingTasks(
+  predecessor: Session,
+  newAgentGroupId: string,
+  newSessionId: string,
+): void {
+  try {
+    const src = openInboundDb(predecessor.agent_group_id, predecessor.id);
+    const dst = openInboundDb(newAgentGroupId, newSessionId);
+    let carried = 0;
+    try {
+      carried = copyPendingTasks(src, dst);
+    } finally {
+      src.close();
+      dst.close();
+    }
+    if (carried > 0) {
+      log.info('Carried scheduled tasks forward across session rotation', {
+        from: predecessor.id,
+        to: newSessionId,
+        count: carried,
+      });
+    }
+  } catch (err) {
+    log.error('Failed to carry scheduled tasks forward on session rotation', {
+      from: predecessor.id,
+      to: newSessionId,
+      err,
+    });
+  }
+}
+
+/**
+ * Pure, handle-based core of carryForwardPendingTasks (testable without the
+ * DATA_DIR folder layout — mirrors runHonestFailureBackstop's shape).
+ *
+ * Copies the source inbound.db's live (pending/paused) `kind='task'` rows into
+ * the destination, preserving id/series_id/recurrence/process_after so audit
+ * trails and recurrence chains survive the rotation. Deduped by id (idempotent),
+ * stamped with a fresh even host seq. Returns the number of rows carried.
+ */
+export function copyPendingTasks(src: Database.Database, dst: Database.Database): number {
+  const tasks = src
+    .prepare(
+      `SELECT id, kind, timestamp, status, platform_id, channel_type, thread_id, content,
+              process_after, recurrence, series_id, trigger
+         FROM messages_in
+        WHERE kind = 'task' AND status IN ('pending', 'paused')`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  if (tasks.length === 0) return 0;
+
+  const exists = dst.prepare('SELECT 1 FROM messages_in WHERE id = ?');
+  const insert = dst.prepare(
+    `INSERT INTO messages_in
+       (id, seq, kind, timestamp, status, platform_id, channel_type, thread_id, content,
+        process_after, recurrence, series_id, trigger, on_wake, tries)
+     VALUES
+       (@id, @seq, @kind, @timestamp, @status, @platform_id, @channel_type, @thread_id, @content,
+        @process_after, @recurrence, @series_id, @trigger, 0, 0)`,
+  );
+  let carried = 0;
+  const tx = dst.transaction(() => {
+    for (const t of tasks) {
+      if (exists.get(t.id as string)) continue;
+      insert.run({ ...t, seq: nextEvenSeq(dst), trigger: (t.trigger as number) ?? 1 });
+      carried++;
+    }
+  });
+  tx();
+  return carried;
 }
 
 /** Create the session folder and initialize both DBs. */
