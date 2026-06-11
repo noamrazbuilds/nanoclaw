@@ -7,9 +7,9 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
-import { initTestSessionDb, closeSessionDb, getInboundDb } from '../db/connection.js';
+import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from '../db/connection.js';
 import { getUndeliveredMessages } from '../db/messages-out.js';
-import { setCurrentInReplyTo, clearCurrentInReplyTo } from '../current-batch.js';
+import { setCurrentInReplyTo, clearCurrentInReplyTo, setSuppressChatOutput } from '../current-batch.js';
 import { sendMessage } from './core.js';
 
 beforeEach(() => {
@@ -25,6 +25,7 @@ beforeEach(() => {
 
 afterEach(() => {
   clearCurrentInReplyTo();
+  setSuppressChatOutput(false);
   closeSessionDb();
 });
 
@@ -46,5 +47,38 @@ describe('send_message MCP tool — in_reply_to plumbing', () => {
     const out = getUndeliveredMessages();
     expect(out).toHaveLength(1);
     expect(out[0].in_reply_to).toBeNull();
+  });
+});
+
+describe('send_message MCP tool — suppress_chat_output (cross-process bridge)', () => {
+  it('drops the outbound row when suppression is active', async () => {
+    setSuppressChatOutput(true);
+
+    const res = await sendMessage.handler({ to: 'peer', text: 'progress update' });
+
+    // No row written, but the agent is told success so it doesn't retry/derail.
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(res.content?.[0]?.text ?? '').toContain('suppressed');
+  });
+
+  it('sends normally once suppression is cleared', async () => {
+    setSuppressChatOutput(true);
+    await sendMessage.handler({ to: 'peer', text: 'suppressed' });
+    setSuppressChatOutput(false);
+    await sendMessage.handler({ to: 'peer', text: 'now visible' });
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content).text).toBe('now visible');
+  });
+
+  it('the suppress flag is persisted to session_state (visible to the MCP subprocess)', () => {
+    // The whole point of the fix: the value lives in outbound.db, not just
+    // process memory, so the separately-spawned MCP server reads the real value.
+    setSuppressChatOutput(true);
+    const row = getOutboundDb()
+      .prepare("SELECT value FROM session_state WHERE key = 'runtime:suppress_chat_output'")
+      .get() as { value: string } | undefined;
+    expect(row?.value).toBe('1');
   });
 });

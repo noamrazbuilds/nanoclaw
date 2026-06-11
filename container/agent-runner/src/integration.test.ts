@@ -303,6 +303,34 @@ describe('poll loop integration', () => {
     await loopPromise.catch(() => {});
   });
 
+  it('a suppress_chat_output task emits NOTHING to chat — even a wrapped final result (#2)', async () => {
+    // The 2026-06-11 leak: a fully-silent task (delivered via email) still leaked
+    // because the agent wrapped its final summary in a <message> block, which
+    // dispatchResultText sends raw. With #2 the poll-loop drops the final result
+    // for suppress tasks, so chat stays silent regardless of how the agent wraps.
+    getInboundDb()
+      .prepare(
+        `INSERT INTO messages_in (id, kind, timestamp, status, platform_id, channel_type, content)
+         VALUES ('t-silent', 'task', datetime('now'), 'pending', 'chan-1', 'discord', ?)`,
+      )
+      .run(JSON.stringify({ prompt: 'daily update', suppress_chat_output: true }));
+
+    const provider = new MockProvider(
+      {},
+      () => '<message to="discord-test"><internal>done</internal>\n\nDaily Update sent to email.</message>',
+    );
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 1500);
+
+    // Give the loop time to process the task and (not) dispatch.
+    await sleep(600);
+    controller.abort();
+
+    expect(getUndeliveredMessages()).toHaveLength(0);
+
+    await loopPromise.catch(() => {});
+  });
+
 });
 
 // Helper: run poll loop until aborted or timeout

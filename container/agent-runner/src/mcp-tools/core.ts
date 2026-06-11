@@ -115,9 +115,11 @@ export const sendMessage: McpToolDefinition = {
     const routing = resolveRouting(args.to as string | undefined);
     if ('error' in routing) return err(routing.error);
 
-    // C4 part 3: when running a suppress_chat_output task, drop intermediate
-    // chat sends. Report success to the agent (so it doesn't retry/derail) but
-    // don't emit the outbound row. The task's final result still goes out.
+    // C4 part 3: when running a suppress_chat_output (fully-silent) task, drop
+    // the chat send. Report success to the agent (so it doesn't retry/derail)
+    // but don't emit the outbound row. The poll-loop also drops the final result
+    // for such tasks, so NOTHING reaches chat — delivery is via the task's own
+    // channels (email, etc.).
     if (getSuppressChatOutput()) {
       log(`send_message suppressed (suppress_chat_output task) → ${routing.resolvedName}`);
       return ok(`Message noted (chat output suppressed for this task) → ${routing.resolvedName}`);
@@ -163,6 +165,12 @@ export const sendFile: McpToolDefinition = {
 
     const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve('/workspace/agent', filePath);
     if (!fs.existsSync(resolvedPath)) return err(`File not found: ${filePath}`);
+
+    // Fully-silent task: drop the chat send (same as send_message).
+    if (getSuppressChatOutput()) {
+      log(`send_file suppressed (suppress_chat_output task) → ${routing.resolvedName}`);
+      return ok(`File noted (chat output suppressed for this task) → ${routing.resolvedName}`);
+    }
 
     const id = generateId();
     const filename = (args.filename as string) || path.basename(resolvedPath);
@@ -299,6 +307,13 @@ export const generateImage: McpToolDefinition = {
 
     const routing = resolveRouting(args.to as string | undefined);
     if ('error' in routing) return err(routing.error);
+
+    // Fully-silent task: skip generation+send entirely (don't even pay the API
+    // cost) — same suppression contract as send_message / send_file.
+    if (getSuppressChatOutput()) {
+      log(`generate_image suppressed (suppress_chat_output task) → ${routing.resolvedName}`);
+      return ok(`Image request noted (chat output suppressed for this task) → ${routing.resolvedName}`);
+    }
 
     const size = (args.size as string) || '1024x1024';
     const host = process.env.LITELLM_HOST || 'http://host.docker.internal:4000';

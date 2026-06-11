@@ -2,47 +2,93 @@
  * Per-batch context the poll loop publishes for downstream consumers
  * (MCP tools, etc.) that don't sit on the poll-loop's call stack.
  *
- * Today the only field is `inReplyTo` — the id of the first inbound
- * message in the batch the agent is currently processing. MCP tools like
- * `send_message` and `send_file` read this and stamp it onto the outbound
- * row so the host's a2a return-path routing can correlate replies back to
- * the originating session.
+ * ⚠ CROSS-PROCESS: the nanoclaw MCP server (send_message / send_file /
+ * generate_image) runs as a SEPARATE `bun` subprocess (see src/index.ts —
+ * `nanoclaw: { command: 'bun', args: [...] }`), spawned by the agent SDK over
+ * stdio. A plain module-level `let` set in the poll-loop process is therefore
+ * invisible to the MCP handlers — they'd always read the default. That is the
+ * 2026-06-11 bug: `suppress_chat_output` never suppressed intermediate
+ * `send_message` calls (and `in_reply_to` was always null on tool-sent rows),
+ * because both lived only in the poll-loop's memory.
  *
- * This is module-level state on purpose: the agent-runner is single-process
- * and processes one batch at a time. Poll-loop calls `setCurrentInReplyTo`
- * before invoking the provider and `clearCurrentInReplyTo` after the batch
- * completes (or errors out).
+ * Fix: back this state with `session_state` in outbound.db, which BOTH processes
+ * open (`getOutboundDb()`). The poll-loop writes; the MCP subprocess reads the
+ * committed value. journal_mode=DELETE makes each commit immediately visible to
+ * the other connection. The module-level mirror is kept as an in-process
+ * fast-path/fallback (and so out-of-batch/test calls behave sanely when no row
+ * exists yet).
  */
+import { getOutboundDb } from './db/connection.js';
+
+const SUPPRESS_KEY = 'runtime:suppress_chat_output';
+const IN_REPLY_TO_KEY = 'runtime:in_reply_to';
+
+// In-process mirror — authoritative only within the writer (poll-loop) process;
+// the subprocess relies entirely on the DB-backed value. Used as a fallback when
+// the DB has no row yet or a read fails.
+let suppressChatOutput = false;
 let currentInReplyTo: string | null = null;
+
+function dbSet(key: string, value: string | null): void {
+  try {
+    const db = getOutboundDb();
+    if (value === null) {
+      db.prepare('DELETE FROM session_state WHERE key = ?').run(key);
+    } else {
+      db.prepare('INSERT OR REPLACE INTO session_state (key, value, updated_at) VALUES (?, ?, ?)').run(
+        key,
+        value,
+        new Date().toISOString(),
+      );
+    }
+  } catch {
+    /* no DB yet (shouldn't happen in-container) — the in-process mirror still holds */
+  }
+}
+
+function dbGet(key: string): string | undefined {
+  try {
+    const row = getOutboundDb().prepare('SELECT value FROM session_state WHERE key = ?').get(key) as
+      | { value: string }
+      | undefined;
+    return row?.value;
+  } catch {
+    return undefined;
+  }
+}
 
 export function setCurrentInReplyTo(id: string | null): void {
   currentInReplyTo = id;
+  dbSet(IN_REPLY_TO_KEY, id);
 }
 
 export function clearCurrentInReplyTo(): void {
   currentInReplyTo = null;
+  dbSet(IN_REPLY_TO_KEY, null);
 }
 
 export function getCurrentInReplyTo(): string | null {
-  return currentInReplyTo;
+  const v = dbGet(IN_REPLY_TO_KEY);
+  return v !== undefined ? v : currentInReplyTo;
 }
 
 /**
  * C4 part 3: transitive output suppression. Set true while the runner is
  * processing a scheduled task whose content declares `suppress_chat_output`.
- * The `send_message` MCP tool consults this and drops intermediate chat sends —
- * the progress / multi-subagent-orchestration messages that leaked to chat in
- * the 2026-05-15 incident. The agent's FINAL result (dispatchResultText) is NOT
- * gated by this flag, so the task's digest still goes out: "release only the
- * final result." Cleared after the batch completes or errors.
+ * Consulted by every chat-emitting MCP tool (send_message / send_file /
+ * generate_image) AND by the poll-loop's final-result dispatch, so a
+ * fully-silent task (e.g. the daily update, delivered via email) emits NOTHING
+ * to chat — not intermediate progress, not the final digest. Cleared after the
+ * batch completes or errors. The honest-failure alert is deliberately NOT gated
+ * by this — a task that lied about completing must still surface.
  */
-let suppressChatOutput = false;
-
 export function setSuppressChatOutput(value: boolean): void {
   suppressChatOutput = value;
+  dbSet(SUPPRESS_KEY, value ? '1' : '0');
 }
 
 export function getSuppressChatOutput(): boolean {
+  const v = dbGet(SUPPRESS_KEY);
+  if (v !== undefined) return v === '1';
   return suppressChatOutput;
 }
-

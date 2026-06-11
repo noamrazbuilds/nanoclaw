@@ -3,7 +3,7 @@ import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } 
 import { writeMessageOut } from './db/messages-out.js';
 import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks, getToolCallsSince } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
-import { clearCurrentInReplyTo, setCurrentInReplyTo, setSuppressChatOutput } from './current-batch.js';
+import { clearCurrentInReplyTo, setCurrentInReplyTo, setSuppressChatOutput, getSuppressChatOutput } from './current-batch.js';
 import {
   formatMessages,
   extractRouting,
@@ -656,6 +656,15 @@ async function processQuery(
                   `Treating as a failure — the reported result was NOT delivered. Re-run it or check why the tool failed.`,
               }),
             });
+          } else if (getSuppressChatOutput()) {
+            // #2 fully-silent task: the final result is delivered via the task's
+            // own channels (email, etc.), never chat. Drop the chat dispatch
+            // entirely — do NOT rely on the agent perfectly wrapping its output
+            // in <internal> (the 2026-06-11 leak: it wrapped a process note in
+            // <internal> but left a user-facing summary outside it, and
+            // dispatchResultText sends <message> bodies raw). The unwrapped-nudge
+            // is also skipped: there is no destination to nudge toward.
+            log(`Final result suppressed (suppress_chat_output task) — not dispatched to chat`);
           } else {
             const { hasUnwrapped } = dispatchResultText(event.text, routing);
             if (hasUnwrapped && !unwrappedNudged) {
