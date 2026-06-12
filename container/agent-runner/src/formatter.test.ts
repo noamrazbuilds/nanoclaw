@@ -62,6 +62,41 @@ describe('context timezone header', () => {
   });
 });
 
+describe('task instructions — corrupt / empty content must not render silently blank', () => {
+  // Insert raw (un-stringified) content so we can store deliberately-malformed JSON.
+  function insertRaw(id: string, kind: string, rawContent: string) {
+    getInboundDb()
+      .prepare(`INSERT INTO messages_in (id, kind, timestamp, status, content) VALUES (?, ?, ?, 'pending', ?)`)
+      .run(id, kind, new Date().toISOString(), rawContent);
+  }
+
+  it('renders the prompt normally for a well-formed task', () => {
+    insertMessage('t-ok', 'task', { prompt: 'Run the morning triage' });
+    const out = formatMessages(getPendingMessages());
+    expect(out).toContain('Instructions:');
+    expect(out).toContain('Run the morning triage');
+  });
+
+  it('surfaces corruption and includes the raw payload when content is invalid JSON', () => {
+    // The 2026-06-12 case: an unescaped " inside the prompt breaks JSON.parse.
+    insertRaw('t-bad', 'task', '{"prompt":"do X with gws_run({command: "gmail +read"})"}');
+    const out = formatMessages(getPendingMessages());
+    expect(out).toContain('could not be parsed');
+    expect(out).toContain('Raw payload:');
+    // Raw payload preserved so the agent can still recover intent (degrade, don't drop).
+    expect(out).toContain('gmail +read');
+    // Must NOT render a deceptively-empty Instructions block.
+    expect(out).not.toMatch(/Instructions:\s*<\/task>/);
+  });
+
+  it('flags a well-formed task with an empty prompt instead of rendering blank', () => {
+    insertMessage('t-empty', 'task', { prompt: '' });
+    const out = formatMessages(getPendingMessages());
+    expect(out).toContain('no instructions');
+    expect(out).not.toMatch(/Instructions:\s*<\/task>/);
+  });
+});
+
 describe('timestamp formatting', () => {
   it('renders time via formatLocalTime (user TZ)', () => {
     // 2026-06-15T12:00:00Z — timezone-agnostic assertions (year is stable)

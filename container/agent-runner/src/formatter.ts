@@ -197,14 +197,49 @@ function originAttr(msg: MessageInRow): string {
 }
 
 function formatTaskMessage(msg: MessageInRow): string {
-  const content = parseContent(msg.content);
+  // Parse strictly here (not via parseContent) so a malformed-JSON task can be
+  // distinguished from a well-formed one with an empty prompt. A task whose
+  // content fails to parse must NOT silently render as a blank "Instructions:"
+  // — that's how the 2026-06-12 corrupt-triage task ran for days doing nothing
+  // (a v1-migration bug left unescaped quotes in the prompt JSON). Instead,
+  // surface the corruption loudly AND include the raw payload so a capable agent
+  // can still recover the intent or report it (degrade, don't drop).
+  let parsed: ReturnType<typeof parseContent> | null = null;
+  let parseFailed = false;
+  try {
+    parsed = JSON.parse(msg.content);
+  } catch {
+    parseFailed = true;
+  }
+  const content = parsed ?? { text: msg.content };
   const from = originAttr(msg);
   const time = formatLocalTime(msg.timestamp, TIMEZONE);
   const parts: string[] = [];
   if (content.scriptOutput) {
     parts.push('Script output:', JSON.stringify(content.scriptOutput, null, 2), '');
   }
-  parts.push('Instructions:', content.prompt || '');
+
+  const prompt = typeof content.prompt === 'string' ? content.prompt : '';
+  if (parseFailed) {
+    parts.push(
+      'Instructions:',
+      '⚠️ This scheduled task could not be parsed — its stored content is not valid JSON ' +
+        '(likely corrupt). Do your best to recover the intent from the raw payload below; if ' +
+        'you cannot, tell the user the task is corrupt and ask them to recreate it. Do NOT ' +
+        'silently do nothing.',
+      '',
+      'Raw payload:',
+      msg.content,
+    );
+  } else if (!prompt) {
+    parts.push(
+      'Instructions:',
+      '⚠️ This scheduled task has no instructions (empty prompt). Tell the user the task is ' +
+        'empty and ask them to recreate it — do NOT silently do nothing.',
+    );
+  } else {
+    parts.push('Instructions:', prompt);
+  }
   return `<task${from} time="${escapeXml(time)}">${parts.join('\n')}</task>`;
 }
 
