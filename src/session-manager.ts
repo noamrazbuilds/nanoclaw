@@ -203,11 +203,7 @@ export function resolveSession(
  * silent. As long as each rotation carries forward, the most-recent session
  * always holds the live tasks and the chain self-heals.
  */
-export function carryForwardPendingTasks(
-  predecessor: Session,
-  newAgentGroupId: string,
-  newSessionId: string,
-): void {
+export function carryForwardPendingTasks(predecessor: Session, newAgentGroupId: string, newSessionId: string): void {
   try {
     const src = openInboundDb(predecessor.agent_group_id, predecessor.id);
     const dst = openInboundDb(newAgentGroupId, newSessionId);
