@@ -47,15 +47,21 @@ MIN_ATTEMPTS = 3        # don't judge a tool on <3 attempts (avoid noise)
 FAIL_THRESHOLD = 0.40   # flag a tool failing ≥40% of the time
 
 # INTEGRATION tools only — substrings matched against the ledger `tool` name.
-# A sustained failure here means a broken integration, not normal trial-and-error.
+# A sustained failure here means a broken EXTERNAL integration (proxy/gateway/auth),
+# not normal agent trial-and-error.
+#
+# Deliberately EXCLUDED: send_message / send_file / add_reaction. Their MCP handlers
+# only QUEUE a row to the outbound DB (the host delivers later) or resolve a local
+# destination — so a tool-call "failure" there is the AGENT calling with a bad
+# destination name or empty text and then self-correcting (cf. Bash typos), NOT a
+# broken integration. Counting them produced false "50% failed" alerts (2026-06-13).
+# Actual message-DELIVERY health is covered separately below by the
+# "Message delivery failed permanently" error-log scan (scan_delivery_failures).
 WATCH = [
-    "gws_run",
-    "remarkable_",
-    "anylist",
-    "send_file",
-    "send_message",
-    "generate_image",
-    "add_reaction",
+    "gws_run",        # → host gws proxy → Google Workspace
+    "remarkable_",    # → host reMarkable bridge → reMarkable cloud
+    "anylist",        # → AnyList MCP → AnyList service
+    "generate_image", # → LiteLLM → image API
 ]
 
 
