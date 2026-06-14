@@ -62,7 +62,25 @@ const SWEEP_INTERVAL_MS = 60_000;
 // Absolute idle ceiling for a running container. If the heartbeat file hasn't
 // been touched in this long, the container is either stuck or doing genuinely
 // nothing — kill and restart on the next inbound.
-export const ABSOLUTE_CEILING_MS = 30 * 60 * 1000;
+//
+// STOPGAP (2026-06-14): raised 30→60 min and made env-configurable. The
+// heartbeat is only advanced while the SDK is streaming events, so it conflates
+// "idle/long-running but healthy" with "genuinely hung" — a heavy task (e.g. the
+// daily-update, which dispatches ~7 research subagents and can run 18-55 min)
+// could be killed mid-work at the old 30-min ceiling. 60 min covers the observed
+// range with margin; the cost is slower detection of a truly-hung container. This
+// is a deliberate interim measure — the real fix is the two-signal liveness
+// design (process-alive vs. SDK-progress) under shadow migration. Override via
+// NANOCLAW_ABSOLUTE_CEILING_MS for tuning without a code change.
+function resolveAbsoluteCeilingMs(): number {
+  const raw = process.env.NANOCLAW_ABSOLUTE_CEILING_MS;
+  const parsed = raw ? Number(raw) : NaN;
+  // Guard: ignore non-numeric / non-positive overrides; floor at 5 min so a
+  // fat-fingered tiny value can't turn the sweep into a kill-everything loop.
+  if (Number.isFinite(parsed) && parsed >= 5 * 60 * 1000) return parsed;
+  return 60 * 60 * 1000;
+}
+export const ABSOLUTE_CEILING_MS = resolveAbsoluteCeilingMs();
 // Stuck tolerance window applied per 'processing' claim — "did we see any
 // signs of life since this message was claimed?"
 export const CLAIM_STUCK_MS = 60 * 1000;
