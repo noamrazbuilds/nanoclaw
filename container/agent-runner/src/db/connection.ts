@@ -119,8 +119,38 @@ export function getOutboundDb(): Database {
         ts     TEXT NOT NULL
       );
     `);
+    // agent_events: structured record of notable container-internal events
+    // (credit exhaustion, content-policy refusals, surfaced query errors).
+    // The host drains this in its sweep into nanoclaw.error.log — without it,
+    // these API-level failures are invisible host-side because the container
+    // runs with --rm and its console logs vanish on exit. Forward-compat for
+    // older outbound.db files.
+    _outbound.exec(`
+      CREATE TABLE IF NOT EXISTS agent_events (
+        id     INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts     TEXT NOT NULL,
+        level  TEXT NOT NULL,
+        kind   TEXT NOT NULL,
+        detail TEXT
+      );
+    `);
   }
   return _outbound;
+}
+
+/**
+ * Record a notable container-internal event for the host to surface. Best-effort
+ * telemetry: a failure here must never break the run, so all errors are
+ * swallowed. `detail` is truncated to keep the row small.
+ */
+export function recordAgentEvent(level: 'error' | 'warn', kind: string, detail?: string | null): void {
+  try {
+    getOutboundDb()
+      .prepare(`INSERT INTO agent_events (ts, level, kind, detail) VALUES (?, ?, ?, ?)`)
+      .run(new Date().toISOString(), level, kind, detail ? detail.slice(0, 1000) : null);
+  } catch {
+    // best-effort — never let telemetry break the agent loop
+  }
 }
 
 /**

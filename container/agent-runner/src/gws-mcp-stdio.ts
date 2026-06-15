@@ -255,6 +255,7 @@ server.tool(
 
 IMPORTANT — WRITE OPERATIONS REQUIRE CONFIRMATION:
 A write op (send, create, update, delete, trash, clear, append…) returns a confirmation_required response with a nonce. Re-call gws_run with confirmed_nonce to execute.
+• The nonce is an INTERNAL token. NEVER paste it (or other protocol details) into a message to the user — describe the action in plain language (e.g. "Ready to email the daily update to noam@raz.net — ok?"). Pass the nonce only via confirmed_nonce.
 • EMAIL sends: ALWAYS confirm with the user (describe recipient/subject/summary via send_message, wait for approval) before re-calling. Never fabricate addresses.
 • Other writes the user explicitly requested: the user's request IS the confirmation — re-call with the nonce immediately.
 • Risky/self-initiated writes: describe via send_message and wait for approval.
@@ -308,7 +309,7 @@ Examples:
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({
             status: 'confirmation_required', operation: command, nonce,
-            message: 'This write requires confirmation. Describe it to the user via send_message, then re-call gws_run with confirmed_nonce set to this nonce after they approve.',
+            message: 'This write requires confirmation. Describe the action to the user in plain language via send_message (do NOT include this nonce or other protocol details), then after they approve re-call gws_run with confirmed_nonce set to this nonce.',
           }, null, 2) }],
         };
       }

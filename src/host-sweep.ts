@@ -162,6 +162,71 @@ async function sweep(): Promise<void> {
   setTimeout(sweep, SWEEP_INTERVAL_MS);
 }
 
+interface AgentEventRow {
+  id: number;
+  ts: string;
+  level: string;
+  kind: string;
+  detail: string | null;
+}
+
+/**
+ * Drain the container's agent_events table into the host log. The container
+ * runs with --rm, so its console output vanishes on exit; this surfaces
+ * API-level failures (credit exhaustion, content-policy refusals, query
+ * errors) host-side in nanoclaw.error.log. Progress is tracked by a host-owned
+ * high-water-mark cursor in inbound.db, so the host never writes outbound.db
+ * and each event is logged exactly once.
+ */
+export function drainAgentEvents(
+  inDb: Database.Database,
+  outDb: Database.Database,
+  session: Pick<Session, 'id'>,
+  agentGroupId: string,
+): AgentEventRow[] {
+  let rows: AgentEventRow[];
+  try {
+    // Forward-compat: older inbound.db files predate the cursor table.
+    inDb.exec(
+      `CREATE TABLE IF NOT EXISTS agent_events_cursor (
+         id INTEGER PRIMARY KEY CHECK (id = 1), last_event_id INTEGER NOT NULL, updated_at TEXT NOT NULL
+       )`,
+    );
+    const cursor = inDb.prepare('SELECT last_event_id FROM agent_events_cursor WHERE id = 1').get() as
+      | { last_event_id: number }
+      | undefined;
+    const last = cursor?.last_event_id ?? 0;
+    rows = outDb
+      .prepare('SELECT id, ts, level, kind, detail FROM agent_events WHERE id > ? ORDER BY id')
+      .all(last) as AgentEventRow[];
+  } catch {
+    // agent_events table absent on older outbound.db — nothing to drain.
+    return [];
+  }
+  if (rows.length === 0) return [];
+
+  for (const ev of rows) {
+    const fields = {
+      sessionId: session.id,
+      agentGroupId,
+      kind: ev.kind,
+      at: ev.ts,
+      detail: ev.detail ?? undefined,
+    };
+    if (ev.level === 'error') log.error('Agent container event', fields);
+    else log.warn('Agent container event', fields);
+  }
+
+  const maxId = rows[rows.length - 1].id;
+  inDb
+    .prepare(
+      `INSERT INTO agent_events_cursor (id, last_event_id, updated_at) VALUES (1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET last_event_id = excluded.last_event_id, updated_at = excluded.updated_at`,
+    )
+    .run(maxId, new Date().toISOString());
+  return rows;
+}
+
 async function sweepSession(session: Session): Promise<void> {
   const agentGroup = getAgentGroup(session.agent_group_id);
   if (!agentGroup) return;
@@ -184,6 +249,11 @@ async function sweepSession(session: Session): Promise<void> {
   }
 
   try {
+    // 0. Drain container-internal events (credit/refusal/query errors) into the
+    // host log. Runs whether or not the container is still alive — events are
+    // written before exit, and the container's --rm logs are otherwise lost.
+    if (outDb) drainAgentEvents(inDb, outDb, session, agentGroup.id);
+
     // 1. Sync processing_ack → messages_in status
     if (outDb) {
       const transitioned = syncProcessingAcks(inDb, outDb);

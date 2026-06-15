@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { getCurrentInReplyTo, getSuppressChatOutput } from '../current-batch.js';
+import { redactNonce } from '../chat-redact.js';
 import { findByName, getAllDestinations } from '../destinations.js';
 import { getMessageIdBySeq, getRoutingBySeq, writeMessageOut } from '../db/messages-out.js';
 import { getSessionRouting } from '../db/session-routing.js';
@@ -109,8 +110,12 @@ export const sendMessage: McpToolDefinition = {
     },
   },
   async handler(args) {
-    const text = args.text as string;
-    if (!text) return err('text is required');
+    const rawText = args.text as string;
+    if (!rawText) return err('text is required');
+    // Hard guard: strip any gws write-confirmation nonce the agent may have
+    // pasted into a user-facing message (it's an internal protocol token).
+    const text = redactNonce(rawText);
+    if (text !== rawText) log('Redacted a gws confirmation nonce from send_message text');
 
     const routing = resolveRouting(args.to as string | undefined);
     if ('error' in routing) return err(routing.error);

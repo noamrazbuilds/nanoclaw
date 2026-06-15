@@ -231,6 +231,15 @@ CREATE TABLE IF NOT EXISTS reactions (
   PRIMARY KEY (message_id, reactor_id)
 );
 CREATE INDEX IF NOT EXISTS idx_reactions_message ON reactions(message_id);
+
+-- Host-owned cursor for draining the container's agent_events table into the
+-- host log. Single-row high-water-mark (id=1). Kept here (inbound, host-owned)
+-- rather than in outbound.db so the host never has to write the container's DB.
+CREATE TABLE IF NOT EXISTS agent_events_cursor (
+  id            INTEGER PRIMARY KEY CHECK (id = 1),
+  last_event_id INTEGER NOT NULL,
+  updated_at    TEXT NOT NULL
+);
 `;
 
 /** Container-owned: outbound messages + processing acknowledgments. */
@@ -293,4 +302,16 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   ts     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tool_calls_ts ON tool_calls(ts);
+
+-- Container-internal events worth surfacing host-side (credit exhaustion,
+-- content-policy refusals, surfaced query errors). The container runs with
+-- --rm, so its console logs vanish on exit; the host drains this table in its
+-- sweep into nanoclaw.error.log. Container appends; host reads (read-only).
+CREATE TABLE IF NOT EXISTS agent_events (
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts     TEXT NOT NULL,
+  level  TEXT NOT NULL,   -- 'error' | 'warn'
+  kind   TEXT NOT NULL,   -- 'credit_exhausted' | 'policy_refusal' | 'query_error' | 'stream_error'
+  detail TEXT
+);
 `;

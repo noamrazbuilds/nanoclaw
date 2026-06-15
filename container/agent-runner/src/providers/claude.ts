@@ -261,7 +261,9 @@ export class ClaudeProvider implements AgentProvider {
           ...Object.keys(this.mcpServers).map(mcpAllowPattern),
         ],
         disallowedTools: SDK_DISALLOWED_TOOLS,
-        env: this.env,
+        // Per-query env overlay (C1 fallback diverts the retry to LiteLLM).
+        // Merged over the full base env so PATH/proxy/NO_PROXY survive.
+        env: input.envOverride ? { ...this.env, ...input.envOverride } : this.env,
         model: input.model ?? this.model,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         effort: this.effort as any,

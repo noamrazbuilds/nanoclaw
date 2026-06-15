@@ -1,7 +1,7 @@
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
 import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
-import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks, getToolCallsSince } from './db/connection.js';
+import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks, getToolCallsSince, recordAgentEvent } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
 import { clearCurrentInReplyTo, setCurrentInReplyTo, setSuppressChatOutput, getSuppressChatOutput } from './current-batch.js';
 import {
@@ -15,6 +15,8 @@ import {
 } from './formatter.js';
 import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types.js';
 import { isCreditError } from './credit-error.js';
+import { isPolicyRefusal, POLICY_REFUSAL_NOTICE } from './policy-refusal.js';
+import { redactNonce } from './chat-redact.js';
 import { getConfig } from './config.js';
 import { parseRequiredTools, unmetRequiredTools, type RequiredTool } from './required-tools.js';
 
@@ -217,11 +219,11 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       // re-run the SAME request once on the fallback model in a FRESH session
       // (no continuation — resuming would bounce back to the same Anthropic
       // model). Capped at one retry: a second credit error is not retried.
-      if (result.creditError && FALLBACK_MODEL) {
-        log(`Credit exhaustion — retrying once on fallback model: ${FALLBACK_MODEL}`);
+      if (result.creditError && FALLBACK_READY) {
+        log(`Credit exhaustion — retrying once on fallback model via LiteLLM: ${FALLBACK_MODEL}`);
         notifyCreditFallback(keep, routing);
         result = await processQuery(
-          config.provider.query({ prompt, continuation: undefined, cwd: config.cwd, systemContext: config.systemContext, model: FALLBACK_MODEL }),
+          config.provider.query({ prompt, continuation: undefined, cwd: config.cwd, systemContext: config.systemContext, model: FALLBACK_MODEL, envOverride: FALLBACK_ENV }),
           routing,
           processingIds,
           config.providerName,
@@ -232,7 +234,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         );
         if (result.creditError) log('Fallback model also reported a credit error — surfacing, no further retry');
       } else if (result.creditError) {
-        log('Credit exhaustion but no fallback model configured (NANOCLAW_FALLBACK_MODEL unset)');
+        log('Credit exhaustion but no fallback configured (need NANOCLAW_FALLBACK_MODEL + LITELLM_HOST + LITELLM_API_KEY)');
         writeMessageOut({
           id: generateId(),
           kind: 'chat',
@@ -250,15 +252,22 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       log(`Query error: ${errMsg}`);
+      // Surface every thrown query error to the host (drained in the sweep into
+      // nanoclaw.error.log), classified so credit/refusal stand out.
+      recordAgentEvent(
+        isPolicyRefusal(errMsg) ? 'warn' : 'error',
+        isCreditError(errMsg) ? 'credit_exhausted' : isPolicyRefusal(errMsg) ? 'policy_refusal' : 'query_error',
+        errMsg,
+      );
 
       // C1: a thrown credit error gets the same one-shot fallback treatment as
       // the in-stream path above.
-      if (isCreditError(errMsg) && FALLBACK_MODEL) {
-        log(`Credit exhaustion (thrown) — retrying once on fallback model: ${FALLBACK_MODEL}`);
+      if (isCreditError(errMsg) && FALLBACK_READY) {
+        log(`Credit exhaustion (thrown) — retrying once on fallback model via LiteLLM: ${FALLBACK_MODEL}`);
         notifyCreditFallback(keep, routing);
         try {
           const fb = await processQuery(
-            config.provider.query({ prompt, continuation: undefined, cwd: config.cwd, systemContext: config.systemContext, model: FALLBACK_MODEL }),
+            config.provider.query({ prompt, continuation: undefined, cwd: config.cwd, systemContext: config.systemContext, model: FALLBACK_MODEL, envOverride: FALLBACK_ENV }),
             routing,
             processingIds,
             config.providerName,
@@ -281,6 +290,24 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
             channel_type: routing.channelType,
             thread_id: routing.threadId,
             content: JSON.stringify({ text: `Error: ${m2}` }),
+          });
+        }
+      } else if (isPolicyRefusal(errMsg)) {
+        // A Usage-Policy refusal (a per-request content-safety classifier hit,
+        // e.g. a news-search subagent) arrives as a thrown SDK error. Don't
+        // dispatch the raw, alarming "API Error: …violate our Usage Policy"
+        // string — it reads like an account block. Log it; for an interactive
+        // turn surface a calm note instead. Suppressed (silent) tasks send
+        // nothing, same as the credit path.
+        log(`Policy refusal (thrown) — suppressing raw API error: ${errMsg.slice(0, 200)}`);
+        if (!getSuppressChatOutput()) {
+          writeMessageOut({
+            id: generateId(),
+            kind: 'chat',
+            platform_id: routing.platformId,
+            channel_type: routing.channelType,
+            thread_id: routing.threadId,
+            content: JSON.stringify({ text: POLICY_REFUSAL_NOTICE }),
           });
         }
       } else {
@@ -469,13 +496,27 @@ interface QueryResult {
 }
 
 /**
- * C1: fallback model for the one-shot credit-error retry. Passed in by the host
- * (NANOCLAW_FALLBACK_MODEL) only when a custom Anthropic-compatible endpoint
- * (ANTHROPIC_BASE_URL → the user's LiteLLM proxy) is configured — which is
- * exactly when a non-Anthropic fallback like gemini is reachable. Absent → no
- * fallback configured → credit errors surface normally.
+ * C1: fallback model for the one-shot credit-error retry (NANOCLAW_FALLBACK_MODEL,
+ * e.g. `gemini-2.5-flash`), passed in by the host when LiteLLM access is wired.
+ *
+ * The normal request path reaches Anthropic via the OneCLI gateway
+ * (api.anthropic.com); the fallback model is NOT reachable there. So on credit
+ * exhaustion we re-run once with an env overlay (FALLBACK_ENV) that points the
+ * SDK at the in-container LiteLLM bridge instead. host.docker.internal is in
+ * NO_PROXY, so this retry bypasses the OneCLI gateway cleanly. Both the model
+ * AND the bridge creds must be present for the fallback to fire.
  */
 const FALLBACK_MODEL = process.env.NANOCLAW_FALLBACK_MODEL;
+const FALLBACK_ENV: Record<string, string> | undefined =
+  process.env.LITELLM_HOST && process.env.LITELLM_API_KEY
+    ? {
+        ANTHROPIC_BASE_URL: process.env.LITELLM_HOST,
+        ANTHROPIC_AUTH_TOKEN: process.env.LITELLM_API_KEY,
+        ANTHROPIC_API_KEY: process.env.LITELLM_API_KEY,
+      }
+    : undefined;
+/** True when a credit-error fallback can actually be attempted. */
+const FALLBACK_READY = Boolean(FALLBACK_MODEL && FALLBACK_ENV);
 
 async function processQuery(
   query: AgentQuery,
@@ -607,6 +648,11 @@ async function processQuery(
       // the one-shot fallback retry (don't surface the raw error).
       if (event.type === 'error' && isCreditError(event.message)) {
         creditError = true;
+        recordAgentEvent('error', 'credit_exhausted', event.message);
+      } else if (event.type === 'error' && isPolicyRefusal(event.message)) {
+        recordAgentEvent('warn', 'policy_refusal', event.message);
+      } else if (event.type === 'error') {
+        recordAgentEvent('error', 'stream_error', event.message);
       }
 
       if (event.type === 'init') {
@@ -632,6 +678,23 @@ async function processQuery(
         if (event.text && isCreditError(event.text)) {
           creditError = true;
           log('Credit error in result text — suppressing, will retry on fallback model');
+          recordAgentEvent('error', 'credit_exhausted', event.text);
+        } else if (event.text && isPolicyRefusal(event.text)) {
+          // SDK exit-0 quirk: a content-policy refusal can arrive as the
+          // "successful" result text. Suppress the raw API string; for an
+          // interactive turn surface a calm note instead of the scary error.
+          log('Policy refusal in result text — suppressing raw API error');
+          recordAgentEvent('warn', 'policy_refusal', event.text);
+          if (!getSuppressChatOutput()) {
+            writeMessageOut({
+              id: generateId(),
+              kind: 'chat',
+              platform_id: routing.platformId,
+              channel_type: routing.channelType,
+              thread_id: routing.threadId,
+              content: JSON.stringify({ text: POLICY_REFUSAL_NOTICE }),
+            });
+          }
         } else if (event.text) {
           // C6 honest-failure gate (container-side prevention): for a task that
           // declared required_tools, verify the runtime-written ledger shows
@@ -767,6 +830,8 @@ function sendToDestination(dest: DestinationEntry, body: string, routing: Routin
   // different destinations have different thread contexts — using a single
   // routing.threadId would stamp one channel's thread onto another.
   const destRouting = resolveDestinationThread(channelType, platformId);
+  const safeBody = redactNonce(body);
+  if (safeBody !== body) log('Redacted a gws confirmation nonce from outbound chat text');
   writeMessageOut({
     id: generateId(),
     in_reply_to: destRouting?.inReplyTo ?? routing.inReplyTo,
@@ -774,7 +839,7 @@ function sendToDestination(dest: DestinationEntry, body: string, routing: Routin
     platform_id: platformId,
     channel_type: channelType,
     thread_id: destRouting?.threadId ?? null,
-    content: JSON.stringify({ text: body }),
+    content: JSON.stringify({ text: safeBody }),
   });
 }
 

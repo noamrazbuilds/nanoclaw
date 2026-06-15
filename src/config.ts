@@ -14,6 +14,7 @@ const envConfig = readEnvFile([
   'TZ',
   'OAUTH_PROXY_URL',
   'LITELLM_API_KEY',
+  'DEFAULT_FALLBACK_MODEL',
 ]);
 
 export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
@@ -28,6 +29,11 @@ export const OAUTH_PROXY_URL = process.env.OAUTH_PROXY_URL || envConfig.OAUTH_PR
 // F1 (Model Arena): LiteLLM gateway API key. Arena bots + grader call LiteLLM
 // directly on the host (http://localhost:4000); the key authenticates them.
 export const LITELLM_API_KEY = process.env.LITELLM_API_KEY || envConfig.LITELLM_API_KEY || '';
+
+// C1 credit-error fallback model. When set, the container re-runs a request once
+// on this model (reached via the in-container LiteLLM bridge) after Anthropic
+// credit exhaustion. Empty → no fallback attempted.
+export const DEFAULT_FALLBACK_MODEL = process.env.DEFAULT_FALLBACK_MODEL || envConfig.DEFAULT_FALLBACK_MODEL || '';
 
 // Absolute paths needed for container mounts
 const PROJECT_ROOT = process.cwd();

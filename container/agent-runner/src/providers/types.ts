@@ -58,6 +58,14 @@ export interface QueryInput {
   model?: string;
 
   /**
+   * Per-query environment overlay, merged over the provider's base env for this
+   * call only. Used by the C1 credit-error fallback to divert the one-shot retry
+   * to the LiteLLM bridge (ANTHROPIC_BASE_URL + auth) without rebuilding the
+   * provider or affecting the normal Anthropic path.
+   */
+  envOverride?: Record<string, string>;
+
+  /**
    * System context to inject. Providers translate this into whatever their
    * SDK expects (preset append, full system prompt, per-turn injection…).
    */
