@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { MessageInRow } from '../db/messages-in.js';
 import { touchHeartbeat } from '../db/connection.js';
+import { writeMessageOut } from '../db/messages-out.js';
 
 const SCRIPT_TIMEOUT_MS = 30_000;
 const SCRIPT_MAX_BUFFER = 1024 * 1024;
@@ -10,6 +11,20 @@ const SCRIPT_MAX_BUFFER = 1024 * 1024;
 export interface ScriptResult {
   wakeAgent: boolean;
   data?: unknown;
+  /**
+   * Optional user-facing messages the script wants delivered WITHOUT waking the
+   * agent. applyPreTaskScripts enqueues each to the task's own destination via the
+   * normal outbound→host-delivery path. This is the "script outbox": a fully
+   * deterministic recurring task (fetch → format → notify) needs no LLM at all —
+   * it returns wakeAgent:false plus the message(s) to send. Empty/blank texts are
+   * ignored. Routing always uses the task row's destination (the script cannot
+   * pick arbitrary recipients).
+   */
+  send?: { text: string }[];
+}
+
+function genOutId(): string {
+  return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function log(msg: string): void {
@@ -104,6 +119,30 @@ export async function applyPreTaskScripts(messages: MessageInRow[]): Promise<Tas
     touchHeartbeat();
     const result = await runScript(script, msg.id);
     touchHeartbeat();
+
+    // Script outbox: deliver any script-emitted messages to the task's own
+    // destination, whether or not the agent is also woken. Fully deterministic —
+    // no Claude call. Best-effort per message; a write failure is logged, never
+    // silently swallows the rest.
+    if (result && Array.isArray(result.send)) {
+      for (const m of result.send) {
+        const text = m && typeof m.text === 'string' ? m.text.trim() : '';
+        if (!text) continue;
+        try {
+          writeMessageOut({
+            id: genOutId(),
+            kind: 'chat',
+            platform_id: msg.platform_id,
+            channel_type: msg.channel_type,
+            thread_id: msg.thread_id,
+            content: JSON.stringify({ text }),
+          });
+          log(`task ${msg.id} script enqueued a message (${text.length} chars)`);
+        } catch (e) {
+          log(`task ${msg.id} script outbox write failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
 
     if (!result || !result.wakeAgent) {
       const reason = result ? 'wakeAgent=false' : 'script error/no output';
