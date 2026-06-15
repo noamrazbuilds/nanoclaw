@@ -13,6 +13,16 @@
  *   gws_discover  — list services or methods within a service
  *   gws_help      — usage/parameter docs for a command
  *   gws_run       — execute any gws command (with guardrails)
+ *
+ * Plus TYPED wrappers for the high-frequency operations (sheets_read/update/
+ * append/clear, drive_find/get/download, gmail_search/read/send). These take
+ * structured params and build the exact, verified gws argv server-side, so the
+ * agent cannot misspell flags or guess subcommands — the failure mode behind the
+ * 2026-06-15 "gws_run 43% failed" alert (every failure was a CLI arg error, e.g.
+ * `--fileId` vs `--params`, `drive files export` of a non-native CSV, dotted
+ * `spreadsheets.values`). Building argv directly also avoids the parseCommand
+ * quoting bug that split a `--json` body into stray argv tokens. gws_run stays for
+ * the long tail / discovery.
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -181,6 +191,86 @@ function parseCommand(command: string): string[] {
   return args;
 }
 
+// --- Shared guarded executor ---
+//
+// Runs an already-built argv through the same guardrails as gws_run: non-main
+// write block, nonce-confirmed writes (scheduled tasks auto-confirm), audit log,
+// and result formatting. gws_run and every typed wrapper funnel through here so
+// the write-confirmation flow and audit trail are identical regardless of entry
+// point. `label` is the human-readable command for the audit log + confirmation
+// message; typed wrappers pass a canonical string (the agent never sees raw argv).
+
+interface ToolReply {
+  [x: string]: unknown;
+  content: { type: 'text'; text: string }[];
+  isError?: boolean;
+}
+
+async function runGuarded(opts: {
+  toolName: string;
+  argv: string[];
+  label: string;
+  classification: 'read' | 'write';
+  confirmedNonce?: string;
+  timeoutMs: number;
+}): Promise<ToolReply> {
+  const { toolName, argv, label, classification, confirmedNonce, timeoutMs } = opts;
+  const start = Date.now();
+
+  // Non-main groups cannot write (defense against indirect prompt injection).
+  if (classification === 'write' && !IS_MAIN) {
+    writeAuditLog({
+      timestamp: new Date().toISOString(), tool: toolName, command: label, classification: 'write',
+      confirmed: false, status: 'error', duration_ms: Date.now() - start, result_size: 0,
+      error: 'Write operations blocked for non-main groups',
+    });
+    return {
+      content: [{ type: 'text' as const, text: 'GWS write operations are only available from the main group. Read operations work normally.' }],
+      isError: true,
+    };
+  }
+
+  // Writes require nonce confirmation (scheduled tasks auto-confirm).
+  if (classification === 'write' && !IS_SCHEDULED_TASK) {
+    if (!confirmedNonce) {
+      const nonce = generateNonce(label);
+      writeAuditLog({
+        timestamp: new Date().toISOString(), tool: toolName, command: label, classification: 'write',
+        confirmed: false, nonce, status: 'confirmation_required', duration_ms: Date.now() - start, result_size: 0, error: null,
+      });
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({
+          status: 'confirmation_required', operation: label, nonce,
+          message: 'This write requires confirmation. Describe the action to the user in plain language via send_message (do NOT include this nonce or other protocol details), then after they approve re-call the same tool with confirmed_nonce set to this nonce.',
+        }, null, 2) }],
+      };
+    }
+    if (!consumeNonce(confirmedNonce)) {
+      writeAuditLog({
+        timestamp: new Date().toISOString(), tool: toolName, command: label, classification: 'write',
+        confirmed: false, nonce: confirmedNonce, status: 'nonce_invalid', duration_ms: Date.now() - start, result_size: 0,
+        error: 'Invalid, expired, or mismatched confirmation nonce',
+      });
+      return {
+        content: [{ type: 'text' as const, text: 'Confirmation failed: invalid/expired nonce. Start the confirmation flow again (call the tool without a nonce).' }],
+        isError: true,
+      };
+    }
+  }
+
+  const result = await execGws(argv, timeoutMs);
+  writeAuditLog({
+    timestamp: new Date().toISOString(), tool: toolName, command: label, classification,
+    confirmed: classification === 'write' ? true : null, nonce: confirmedNonce || undefined,
+    status: result.exitCode === 0 ? 'success' : 'error', duration_ms: Date.now() - start,
+    result_size: result.stdout.length, error: result.exitCode !== 0 ? result.stderr : null,
+  });
+  if (result.exitCode !== 0) {
+    return { content: [{ type: 'text' as const, text: `Command failed (exit ${result.exitCode}):\n${result.stderr}\n${result.stdout}` }], isError: true };
+  }
+  return { content: [{ type: 'text' as const, text: result.stdout }] };
+}
+
 // --- MCP Server ---
 
 const server = new McpServer({ name: 'gws', version: '2.0.0' });
@@ -271,7 +361,6 @@ Examples:
     confirmed_nonce: z.string().optional().describe('Nonce from a prior confirmation_required response. Required for write ops.'),
   },
   async (args) => {
-    const start = Date.now();
     let command = args.command;
     let confirmedNonce = args.confirmed_nonce;
     if (!confirmedNonce) {
@@ -284,59 +373,222 @@ Examples:
 
     const classification = classifyOperation(command);
     const gwsArgs = parseCommand(command);
+    return runGuarded({ toolName: 'gws_run', argv: gwsArgs, label: command, classification, confirmedNonce, timeoutMs: EXEC_TIMEOUT_MS });
+  },
+);
 
-    // Non-main groups cannot write (defense against indirect prompt injection).
-    if (classification === 'write' && !IS_MAIN) {
-      writeAuditLog({
-        timestamp: new Date().toISOString(), tool: 'gws_run', command, classification: 'write',
-        confirmed: false, status: 'error', duration_ms: Date.now() - start, result_size: 0,
-        error: 'Write operations blocked for non-main groups',
-      });
-      return {
-        content: [{ type: 'text' as const, text: 'GWS write operations are only available from the main group. Read operations work normally.' }],
-        isError: true,
-      };
-    }
+// --- Typed wrappers (verified gws argv built server-side; agent fills params) ---
+//
+// Prefer these over gws_run for the operations they cover. The agent supplies
+// structured params; the wrapper builds the exact, correct gws invocation. Writes
+// flow through the same nonce-confirmation guardrail as gws_run.
 
-    // Writes require nonce confirmation (scheduled tasks auto-confirm).
-    if (classification === 'write' && !IS_SCHEDULED_TASK) {
-      if (!confirmedNonce) {
-        const nonce = generateNonce(command);
-        writeAuditLog({
-          timestamp: new Date().toISOString(), tool: 'gws_run', command, classification: 'write',
-          confirmed: false, nonce, status: 'confirmation_required', duration_ms: Date.now() - start, result_size: 0, error: null,
-        });
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({
-            status: 'confirmation_required', operation: command, nonce,
-            message: 'This write requires confirmation. Describe the action to the user in plain language via send_message (do NOT include this nonce or other protocol details), then after they approve re-call gws_run with confirmed_nonce set to this nonce.',
-          }, null, 2) }],
-        };
-      }
-      if (!consumeNonce(confirmedNonce)) {
-        writeAuditLog({
-          timestamp: new Date().toISOString(), tool: 'gws_run', command, classification: 'write',
-          confirmed: false, nonce: confirmedNonce, status: 'nonce_invalid', duration_ms: Date.now() - start, result_size: 0,
-          error: 'Invalid, expired, or mismatched confirmation nonce',
-        });
-        return {
-          content: [{ type: 'text' as const, text: 'Confirmation failed: invalid/expired nonce. Start the confirmation flow again (call gws_run without a nonce).' }],
-          isError: true,
-        };
-      }
-    }
+const WRITE_CONFIRM_NOTE =
+  'WRITE: returns confirmation_required with a nonce on first call — describe the action to the user in plain language (never paste the nonce), then re-call with confirmed_nonce. Scheduled tasks auto-confirm.';
 
-    const result = await execGws(gwsArgs, EXEC_TIMEOUT_MS);
-    writeAuditLog({
-      timestamp: new Date().toISOString(), tool: 'gws_run', command, classification,
-      confirmed: classification === 'write' ? true : null, nonce: confirmedNonce || undefined,
-      status: result.exitCode === 0 ? 'success' : 'error', duration_ms: Date.now() - start,
-      result_size: result.stdout.length, error: result.exitCode !== 0 ? result.stderr : null,
+server.tool(
+  'sheets_read',
+  `Read a range from a Google Sheet. Returns JSON rows. (read)
+Example: sheets_read({ spreadsheetId: "1ABC...", range: "Upcoming Concerts!A:H" })`,
+  {
+    spreadsheetId: z.string().describe('The spreadsheet ID (from its URL).'),
+    range: z.string().describe("A1 range, including the tab name, e.g. \"Sheet1!A1:H100\" or \"'Tab With Spaces'!A:H\"."),
+  },
+  async (args) => {
+    const params = JSON.stringify({ spreadsheetId: args.spreadsheetId, range: args.range });
+    return runGuarded({
+      toolName: 'sheets_read',
+      argv: ['sheets', 'spreadsheets', 'values', 'get', '--params', params, '--format=json'],
+      label: `sheets_read ${args.spreadsheetId} ${args.range}`,
+      classification: 'read', timeoutMs: EXEC_TIMEOUT_MS,
     });
-    if (result.exitCode !== 0) {
-      return { content: [{ type: 'text' as const, text: `Command failed (exit ${result.exitCode}):\n${result.stderr}\n${result.stdout}` }], isError: true };
-    }
-    return { content: [{ type: 'text' as const, text: result.stdout }] };
+  },
+);
+
+server.tool(
+  'sheets_update',
+  `Overwrite cells in a Google Sheet starting at a range. ${WRITE_CONFIRM_NOTE}
+Example: sheets_update({ spreadsheetId: "1ABC...", range: "Sheet1!A2", values: [["a","b"],["c","d"]] })`,
+  {
+    spreadsheetId: z.string().describe('The spreadsheet ID.'),
+    range: z.string().describe('A1 range (top-left anchor), including tab name.'),
+    values: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))).describe('2D array of row values.'),
+    valueInputOption: z.enum(['RAW', 'USER_ENTERED']).optional().describe('Default RAW. USER_ENTERED parses formulas/dates.'),
+    confirmed_nonce: z.string().optional().describe('Nonce from a prior confirmation_required response.'),
+  },
+  async (args) => {
+    const params = JSON.stringify({ spreadsheetId: args.spreadsheetId, range: args.range, valueInputOption: args.valueInputOption ?? 'RAW' });
+    const body = JSON.stringify({ values: args.values });
+    return runGuarded({
+      toolName: 'sheets_update',
+      argv: ['sheets', 'spreadsheets', 'values', 'update', '--params', params, '--json', body],
+      label: `sheets_update ${args.spreadsheetId} ${args.range} (${args.values.length} rows)`,
+      classification: 'write', confirmedNonce: args.confirmed_nonce, timeoutMs: EXEC_TIMEOUT_MS,
+    });
+  },
+);
+
+server.tool(
+  'sheets_append',
+  `Append rows after the last row of data in a range. ${WRITE_CONFIRM_NOTE}
+Example: sheets_append({ spreadsheetId: "1ABC...", range: "Sheet1!A:H", values: [["x","y"]] })`,
+  {
+    spreadsheetId: z.string().describe('The spreadsheet ID.'),
+    range: z.string().describe('A1 range identifying the table to append to, including tab name.'),
+    values: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))).describe('2D array of row values.'),
+    valueInputOption: z.enum(['RAW', 'USER_ENTERED']).optional().describe('Default RAW.'),
+    confirmed_nonce: z.string().optional(),
+  },
+  async (args) => {
+    const params = JSON.stringify({
+      spreadsheetId: args.spreadsheetId, range: args.range,
+      valueInputOption: args.valueInputOption ?? 'RAW', insertDataOption: 'INSERT_ROWS',
+    });
+    const body = JSON.stringify({ values: args.values });
+    return runGuarded({
+      toolName: 'sheets_append',
+      argv: ['sheets', 'spreadsheets', 'values', 'append', '--params', params, '--json', body],
+      label: `sheets_append ${args.spreadsheetId} ${args.range} (${args.values.length} rows)`,
+      classification: 'write', confirmedNonce: args.confirmed_nonce, timeoutMs: EXEC_TIMEOUT_MS,
+    });
+  },
+);
+
+server.tool(
+  'sheets_clear',
+  `Clear cell VALUES in a range without deleting the sheet/file. Use this to reset a tab. ${WRITE_CONFIRM_NOTE}
+Example: sheets_clear({ spreadsheetId: "1ABC...", range: "Sheet1!A2:H" })`,
+  {
+    spreadsheetId: z.string().describe('The spreadsheet ID.'),
+    range: z.string().describe('A1 range to clear, including tab name.'),
+    confirmed_nonce: z.string().optional(),
+  },
+  async (args) => {
+    const params = JSON.stringify({ spreadsheetId: args.spreadsheetId, range: args.range });
+    return runGuarded({
+      toolName: 'sheets_clear',
+      argv: ['sheets', 'spreadsheets', 'values', 'clear', '--params', params],
+      label: `sheets_clear ${args.spreadsheetId} ${args.range}`,
+      classification: 'write', confirmedNonce: args.confirmed_nonce, timeoutMs: EXEC_TIMEOUT_MS,
+    });
+  },
+);
+
+server.tool(
+  'drive_find',
+  `Search Drive for files. Returns JSON {files:[{id,name,mimeType,...}]}. (read)
+Example: drive_find({ query: "name contains 'birthday'" })`,
+  {
+    query: z.string().describe("Drive query (q syntax), e.g. \"name contains 'report'\" or \"'FOLDER_ID' in parents\"."),
+    pageSize: z.number().int().min(1).max(100).optional().describe('Max files to return (default 25).'),
+    fields: z.string().optional().describe("Optional partial-response fields, e.g. \"files(id,name,mimeType)\"."),
+  },
+  async (args) => {
+    const p: Record<string, unknown> = { q: args.query, pageSize: args.pageSize ?? 25 };
+    if (args.fields) p.fields = args.fields;
+    return runGuarded({
+      toolName: 'drive_find',
+      argv: ['drive', 'files', 'list', '--params', JSON.stringify(p), '--format=json'],
+      label: `drive_find ${args.query}`,
+      classification: 'read', timeoutMs: EXEC_TIMEOUT_MS,
+    });
+  },
+);
+
+server.tool(
+  'drive_get',
+  `Get a Drive file's metadata by ID. (read)
+Example: drive_get({ fileId: "14vR...", fields: "id,name,mimeType,size,trashed" })`,
+  {
+    fileId: z.string().describe('The Drive file ID.'),
+    fields: z.string().optional().describe('Metadata fields (default "id,name,mimeType,size,trashed,modifiedTime").'),
+  },
+  async (args) => {
+    const params = JSON.stringify({ fileId: args.fileId, fields: args.fields ?? 'id,name,mimeType,size,trashed,modifiedTime' });
+    return runGuarded({
+      toolName: 'drive_get',
+      argv: ['drive', 'files', 'get', '--params', params, '--format=json'],
+      label: `drive_get ${args.fileId}`,
+      classification: 'read', timeoutMs: EXEC_TIMEOUT_MS,
+    });
+  },
+);
+
+server.tool(
+  'drive_download',
+  `Download a file's CONTENT to a path. Use for non-Google files (CSV, PDF, images). Do NOT use Drive "export" for these — that only works on native Docs/Sheets/Slides. (read)
+Example: drive_download({ fileId: "14vR...", output: "birthday_list.csv" })`,
+  {
+    fileId: z.string().describe('The Drive file ID.'),
+    output: z.string().describe('Output path. Must be relative to the working dir (e.g. "data.csv" or "subdir/data.csv").'),
+  },
+  async (args) => {
+    const params = JSON.stringify({ fileId: args.fileId, alt: 'media' });
+    return runGuarded({
+      toolName: 'drive_download',
+      argv: ['drive', 'files', 'get', '--params', params, '-o', args.output],
+      label: `drive_download ${args.fileId} -> ${args.output}`,
+      classification: 'read', timeoutMs: EXEC_TIMEOUT_MS,
+    });
+  },
+);
+
+server.tool(
+  'gmail_search',
+  `Search Gmail messages. Returns JSON {messages:[{id,threadId}]} — follow with gmail_read for content. (read)
+Example: gmail_search({ query: "from:ticketmaster.com is:unread", maxResults: 20 })`,
+  {
+    query: z.string().describe('Gmail search query (same syntax as the Gmail search box).'),
+    maxResults: z.number().int().min(1).max(100).optional().describe('Max messages (default 20).'),
+  },
+  async (args) => {
+    const params = JSON.stringify({ userId: 'me', q: args.query, maxResults: args.maxResults ?? 20 });
+    return runGuarded({
+      toolName: 'gmail_search',
+      argv: ['gmail', 'users', 'messages', 'list', '--params', params, '--format=json'],
+      label: `gmail_search ${args.query}`,
+      classification: 'read', timeoutMs: EXEC_TIMEOUT_MS,
+    });
+  },
+);
+
+server.tool(
+  'gmail_read',
+  `Read a Gmail message by ID (sender, subject, date, body). (read)
+Example: gmail_read({ id: "19ecbd1db1022ecd" })`,
+  { id: z.string().describe('The Gmail message ID (from gmail_search).') },
+  async (args) => {
+    return runGuarded({
+      toolName: 'gmail_read',
+      argv: ['gmail', '+read', '--id', args.id],
+      label: `gmail_read ${args.id}`,
+      classification: 'read', timeoutMs: EXEC_TIMEOUT_MS,
+    });
+  },
+);
+
+server.tool(
+  'gmail_send',
+  `Send an email. ${WRITE_CONFIRM_NOTE} ALWAYS confirm recipient/subject with the user first — never fabricate addresses.
+Example: gmail_send({ to: "a@b.com", subject: "Hi", body: "Line1\\nLine2" })`,
+  {
+    to: z.string().describe('Recipient address(es), comma-separated.'),
+    subject: z.string().describe('Subject line.'),
+    body: z.string().describe('Plain-text body (use \\n for line breaks).'),
+    cc: z.string().optional().describe('CC address(es), comma-separated.'),
+    bcc: z.string().optional().describe('BCC address(es), comma-separated.'),
+    confirmed_nonce: z.string().optional(),
+  },
+  async (args) => {
+    const argv = ['gmail', '+send', '--to', args.to, '--subject', args.subject, '--body', args.body];
+    if (args.cc) argv.push('--cc', args.cc);
+    if (args.bcc) argv.push('--bcc', args.bcc);
+    return runGuarded({
+      toolName: 'gmail_send',
+      argv,
+      label: `gmail_send to=${args.to} subject="${args.subject}"`,
+      classification: 'write', confirmedNonce: args.confirmed_nonce, timeoutMs: EXEC_TIMEOUT_MS,
+    });
   },
 );
 

@@ -5,20 +5,45 @@ description: Access Google Workspace services (Gmail, Drive, Calendar, Sheets, D
 
 # Google Workspace Integration
 
-You have access to Google Workspace via three MCP tools. These tools wrap the `gws` CLI, which dynamically discovers all Google Workspace APIs.
+You have access to Google Workspace via MCP tools that wrap the `gws` CLI.
 
-## Available Tools
+## PREFER THE TYPED TOOLS
+
+For the common operations there are **typed tools** that build the exact gws
+invocation for you. Use them first — you fill in structured params and cannot get
+the CLI syntax wrong. Reach for `gws_run` only for operations not covered here.
+
+| Tool | Does | R/W |
+|------|------|-----|
+| `mcp__gws__sheets_read` `{ spreadsheetId, range }` | Read a sheet range (JSON rows) | read |
+| `mcp__gws__sheets_update` `{ spreadsheetId, range, values }` | Overwrite cells from a 2D array | write |
+| `mcp__gws__sheets_append` `{ spreadsheetId, range, values }` | Append rows after the last data row | write |
+| `mcp__gws__sheets_clear` `{ spreadsheetId, range }` | Clear cell values (how you EMPTY a tab) | write |
+| `mcp__gws__drive_find` `{ query }` | Search Drive (`q` syntax) | read |
+| `mcp__gws__drive_get` `{ fileId }` | File metadata | read |
+| `mcp__gws__drive_download` `{ fileId, output }` | Download CONTENT (CSV/PDF/image). NOT "export" | read |
+| `mcp__gws__gmail_search` `{ query, maxResults }` | Search messages → ids | read |
+| `mcp__gws__gmail_read` `{ id }` | Read a message | read |
+| `mcp__gws__gmail_send` `{ to, subject, body }` | Send an email | write |
+
+- `range` always includes the tab name, e.g. `"Upcoming Concerts!A:H"`.
+- `values` is a 2D array, e.g. `[["June 1","Blue Note","NYC"]]` — NOT a JSON string.
+- To download a non-Google file (a `.csv`/`.pdf` already in Drive) use `drive_download`. Do **not** use Drive *export* — that only works on native Docs/Sheets/Slides and 403s on everything else.
+- Write tools return `confirmation_required` with a `nonce` on first call (see the confirmation flow below); re-call with `confirmed_nonce`. Scheduled tasks auto-confirm.
+
+## Lower-level tools (fallback)
 
 ### `mcp__gws__gws_discover`
-List available services or explore methods within a service. Use this to find out what operations are available.
+List available services or explore methods within a service.
 
 ### `mcp__gws__gws_help`
 Get detailed help for a specific command, including parameters and usage examples.
 
 ### `mcp__gws__gws_run`
-Execute any gws command. This is the main tool for all Google Workspace operations.
+Execute any gws command — the escape hatch for operations without a typed tool
+(Calendar, Docs, Slides, Forms, Chat, less-common Gmail/Drive ops).
 
-## Syntax rules (READ FIRST — getting these wrong causes 400/validation errors)
+## gws_run syntax rules (READ FIRST — getting these wrong causes 400/validation errors)
 
 These are the exact, verified forms. The CLI is strict; do not improvise.
 - **`--format=json`** uses an `=` (NOT `--format json` — the space form is parsed as a service name and fails).
@@ -55,7 +80,7 @@ gws_run({ command: "sheets spreadsheets values append --params '{\"spreadsheetId
 ```
 gws_run({ command: "drive files list --params '{\"q\":\"name contains '\\''report'\\''\",\"fields\":\"files(id,name)\"}' --format=json" })  # Search
 gws_run({ command: "drive files get --params '{\"fileId\":\"FILE_ID\",\"fields\":\"id,name,trashed\"}' --format=json" })                  # Metadata
-gws_run({ command: "drive files download --params '{\"fileId\":\"FILE_ID\"}'" })                                                          # Download (e.g. a CSV)
+gws_run({ command: "drive files get --params '{\"fileId\":\"FILE_ID\",\"alt\":\"media\"}' -o filename.csv" })                              # Download content (prefer the drive_download tool)
 ```
 ⚠️ **`drive files delete`, `drive files trash`, and trash-via-update are BLOCKED by policy and will be rejected.** Two Google Sheets were lost this way. To empty a spreadsheet, use `sheets spreadsheets values clear` (above) — that wipes the cells WITHOUT touching the file. Never try to delete or trash a Drive file to "reset" it.
 
