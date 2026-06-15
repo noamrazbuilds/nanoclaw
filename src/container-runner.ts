@@ -41,6 +41,7 @@ import {
   type VolumeMount,
 } from './providers/provider-container-registry.js';
 import {
+  alivePath,
   heartbeatPath,
   markContainerRunning,
   markContainerStopped,
@@ -155,6 +156,12 @@ async function spawnContainer(session: Session): Promise<void> {
   // (host-sweep.ts line 87). Without this, the stale mtime can trigger an
   // immediate kill before the new container touches the file itself.
   fs.rmSync(heartbeatPath(agentGroup.id, session.id), { force: true });
+  // Same grace for the process-liveness file (.alive): the session dir is reused
+  // across spawns, so a stale .alive from the prior container would otherwise
+  // make decideStuckActionV2 see a fresh container as process-dead within
+  // PROCESS_DEAD_MS, before its first touchAlive() tick. Cleared → mtime 0 →
+  // the process-dead branch is gated off until the new container ticks (~1s).
+  fs.rmSync(alivePath(agentGroup.id, session.id), { force: true });
 
   const container = spawn(CONTAINER_RUNTIME_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 

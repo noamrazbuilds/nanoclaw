@@ -1,7 +1,7 @@
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
 import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
-import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks, getToolCallsSince, recordAgentEvent } from './db/connection.js';
+import { getInboundDb, touchHeartbeat, touchAlive, clearStaleProcessingAcks, getToolCallsSince, recordAgentEvent } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
 import { clearCurrentInReplyTo, setCurrentInReplyTo, setSuppressChatOutput, getSuppressChatOutput } from './current-batch.js';
 import {
@@ -78,6 +78,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     const messages = getPendingMessages(isFirstPoll).filter((m) => m.kind !== 'system');
     isFirstPoll = false;
     pollCount++;
+
+    // Signal 1 (process-liveness): touch .alive every outer iteration, BEFORE the
+    // idle-sleep branches below. Proves the event loop is running even when the
+    // container is idle (no SDK activity). The inner active-query poller touches
+    // it during a query (it stays fresh while .heartbeat — SDK progress — does
+    // not). See touchAlive() and host-sweep decideStuckActionV2.
+    touchAlive();
 
     // Periodic heartbeat so we know the loop is alive
     if (pollCount % 30 === 0) {
@@ -549,6 +556,14 @@ async function processQuery(
   // not the trigger.
   let endedForReprocess = false;
   const pollHandle = setInterval(() => {
+    // Signal 1 (process-liveness): touch .alive FIRST, unconditionally — above the
+    // guard below. This timer fires every 500ms independent of SDK events, so it
+    // proves the event loop is alive DURING an active query even when the SDK is
+    // mid-call and streaming nothing (an async hang). Must be above the guard:
+    // placing it after would suppress the touch whenever a follow-up poll is
+    // already in-flight (pollInFlight), exactly when liveness most needs proving.
+    // clearInterval(pollHandle) in the finally stops this when the query ends.
+    touchAlive();
     if (done || pollInFlight || endedForReprocess) return;
     pollInFlight = true;
 

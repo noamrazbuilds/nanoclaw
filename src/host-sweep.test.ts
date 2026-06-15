@@ -10,8 +10,11 @@ import { deleteOrphanProcessingClaims, getProcessingClaims } from './db/session-
 import {
   ABSOLUTE_CEILING_MS,
   CLAIM_STUCK_MS,
+  IDLE_TIMEOUT_MS,
+  PROCESS_DEAD_MS,
   _resetStuckProcessingRowsForTesting,
   decideStuckAction,
+  decideStuckActionV2,
   parseSqliteUtc,
 } from './host-sweep.js';
 import type { Session } from './types.js';
@@ -151,6 +154,202 @@ describe('decideStuckAction', () => {
       claims: [{ message_id: 'x', status_changed: 'not-a-date' }],
     });
     expect(res.action).toBe('ok');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Two-signal liveness — decideStuckActionV2
+//
+// Signal 1 (.alive / aliveMtimeMs) = event loop alive. Signal 2 (.heartbeat /
+// heartbeatMtimeMs) = SDK progress. A FRESH .alive must accompany the Signal-2
+// cases below so the process-dead branch (checked first) doesn't preempt them.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('decideStuckActionV2', () => {
+  const FRESH = BASE - 1_000; // 1s ago — well within every threshold
+
+  it('returns ok when both signals fresh and no claims', () => {
+    expect(
+      decideStuckActionV2({
+        now: BASE,
+        aliveMtimeMs: FRESH,
+        heartbeatMtimeMs: FRESH,
+        containerState: null,
+        claims: [],
+      }),
+    ).toEqual({ action: 'ok' });
+  });
+
+  // ── 1. process-dead ──
+  it('kills process-dead when .alive is stale (with no claim)', () => {
+    const aliveMtimeMs = BASE - PROCESS_DEAD_MS - 1_000;
+    const res = decideStuckActionV2({ now: BASE, aliveMtimeMs, heartbeatMtimeMs: FRESH, containerState: null, claims: [] });
+    expect(res.action).toBe('kill-process-dead');
+    if (res.action !== 'kill-process-dead') return;
+    expect(res.thresholdMs).toBe(PROCESS_DEAD_MS);
+    expect(res.aliveAgeMs).toBeGreaterThan(PROCESS_DEAD_MS);
+  });
+
+  it('kills process-dead even when a claim is active', () => {
+    const res = decideStuckActionV2({
+      now: BASE,
+      aliveMtimeMs: BASE - PROCESS_DEAD_MS - 1_000,
+      heartbeatMtimeMs: FRESH,
+      containerState: null,
+      claims: [claim('m', 5_000)],
+    });
+    expect(res.action).toBe('kill-process-dead');
+  });
+
+  it('process-dead WINS over sdk-hung (ordering): both stale + a claim → process-dead', () => {
+    const res = decideStuckActionV2({
+      now: BASE,
+      aliveMtimeMs: BASE - PROCESS_DEAD_MS - 1_000,
+      heartbeatMtimeMs: BASE - ABSOLUTE_CEILING_MS - 1_000,
+      containerState: null,
+      claims: [claim('m', ABSOLUTE_CEILING_MS + 5_000)],
+    });
+    expect(res.action).toBe('kill-process-dead');
+  });
+
+  it('fresh-spawn grace: aliveMtimeMs=0 never trips process-dead', () => {
+    const res = decideStuckActionV2({ now: BASE, aliveMtimeMs: 0, heartbeatMtimeMs: FRESH, containerState: null, claims: [] });
+    expect(res.action).toBe('ok');
+  });
+
+  it('does not kill process-dead when .alive is fresh', () => {
+    const res = decideStuckActionV2({ now: BASE, aliveMtimeMs: FRESH, heartbeatMtimeMs: FRESH, containerState: null, claims: [] });
+    expect(res.action).toBe('ok');
+  });
+
+  // ── 2. sdk-hung (gated on an active claim) ──
+  it('kills sdk-hung when a task is claimed and heartbeat older than the ceiling', () => {
+    const res = decideStuckActionV2({
+      now: BASE,
+      aliveMtimeMs: FRESH, // process alive — only the SDK is stuck
+      heartbeatMtimeMs: BASE - ABSOLUTE_CEILING_MS - 1_000,
+      containerState: null,
+      claims: [claim('m', 30_000)], // claim younger than ceiling so claim-stuck wouldn't fire first
+    });
+    expect(res.action).toBe('kill-sdk-hung');
+    if (res.action !== 'kill-sdk-hung') return;
+    expect(res.ceilingMs).toBe(ABSOLUTE_CEILING_MS);
+  });
+
+  it('does NOT kill sdk-hung when there is no active claim (idle container survives SDK-staleness)', () => {
+    // Same stale heartbeat, but no claim and heartbeat age < IDLE_TIMEOUT → ok.
+    const res = decideStuckActionV2({
+      now: BASE,
+      aliveMtimeMs: FRESH,
+      heartbeatMtimeMs: BASE - ABSOLUTE_CEILING_MS - 1_000,
+      containerState: null,
+      claims: [],
+    });
+    expect(res.action).toBe('ok');
+  });
+
+  it('extends the sdk-hung ceiling when Bash declares a longer timeout', () => {
+    const longBash = ABSOLUTE_CEILING_MS + 30 * 60 * 1000;
+    const res = decideStuckActionV2({
+      now: BASE,
+      aliveMtimeMs: FRESH,
+      heartbeatMtimeMs: BASE - ABSOLUTE_CEILING_MS - 60_000, // past base ceiling but within declared Bash
+      containerState: { current_tool: 'Bash', tool_declared_timeout_ms: longBash } as never,
+      claims: [claim('m', 30_000)],
+    });
+    expect(res.action).toBe('ok');
+  });
+
+  // ── 3. claim-stuck (unchanged semantics) ──
+  it('kills claim-stuck when a claim is past tolerance and heartbeat has not moved since', () => {
+    const res = decideStuckActionV2({
+      now: BASE,
+      aliveMtimeMs: FRESH, // alive, so process-dead doesn't preempt
+      heartbeatMtimeMs: BASE - 5 * 60 * 1000, // before the claim
+      containerState: null,
+      claims: [claim('m', CLAIM_STUCK_MS + 5_000)],
+    });
+    expect(res.action).toBe('kill-claim');
+  });
+
+  it('does not kill claim-stuck when heartbeat moved after the claim', () => {
+    const res = decideStuckActionV2({
+      now: BASE,
+      aliveMtimeMs: FRESH,
+      heartbeatMtimeMs: BASE - 2_000, // after the claim
+      containerState: null,
+      claims: [claim('m', CLAIM_STUCK_MS + 5_000)],
+    });
+    expect(res.action).toBe('ok');
+  });
+
+  // ── 4. idle-timeout ──
+  it('kills idle-timeout when unclaimed and last SDK event older than IDLE_TIMEOUT_MS', () => {
+    const res = decideStuckActionV2({
+      now: BASE,
+      aliveMtimeMs: FRESH, // process alive & idle
+      heartbeatMtimeMs: BASE - IDLE_TIMEOUT_MS - 1_000,
+      containerState: null,
+      claims: [],
+    });
+    expect(res.action).toBe('kill-idle');
+    if (res.action !== 'kill-idle') return;
+    expect(res.thresholdMs).toBe(IDLE_TIMEOUT_MS);
+  });
+
+  it('keeps an idle container WARM between the ceiling and the idle timeout (the headline win)', () => {
+    // Heartbeat older than the (legacy) ABSOLUTE_CEILING_MS but younger than
+    // IDLE_TIMEOUT_MS, no claim → legacy would kill-ceiling; V2 leaves it alone.
+    const res = decideStuckActionV2({
+      now: BASE,
+      aliveMtimeMs: FRESH,
+      heartbeatMtimeMs: BASE - ABSOLUTE_CEILING_MS - 60_000,
+      containerState: null,
+      claims: [],
+    });
+    expect(res.action).toBe('ok');
+  });
+
+  it('never reaps a never-worked fresh container via idle (heartbeatMtimeMs=0, no claim)', () => {
+    const res = decideStuckActionV2({ now: BASE, aliveMtimeMs: FRESH, heartbeatMtimeMs: 0, containerState: null, claims: [] });
+    expect(res.action).toBe('ok');
+  });
+
+  it('idle-timeout does not fire while a claim is active (mutual exclusion with sdk-hung)', () => {
+    const res = decideStuckActionV2({
+      now: BASE,
+      aliveMtimeMs: FRESH,
+      heartbeatMtimeMs: BASE - IDLE_TIMEOUT_MS - 1_000,
+      containerState: null,
+      claims: [claim('m', 30_000)],
+    });
+    // With a claim + heartbeat well past the ceiling → sdk-hung, not idle.
+    expect(res.action).toBe('kill-sdk-hung');
+  });
+
+  // ── V2 ⊇ legacy (the load-bearing shadow-migration invariant) ──
+  it('V2 kills wherever legacy kill-ceiling fires (maps to sdk-hung when claimed)', () => {
+    const heartbeatMtimeMs = BASE - ABSOLUTE_CEILING_MS - 1_000;
+    const legacyArgs = { now: BASE, heartbeatMtimeMs, containerState: null, claims: [claim('m', 30_000)] };
+    expect(decideStuckAction(legacyArgs).action).toBe('kill-ceiling');
+    expect(decideStuckActionV2({ ...legacyArgs, aliveMtimeMs: FRESH }).action).toBe('kill-sdk-hung');
+  });
+
+  it('V2 kills wherever legacy kill-ceiling fires (maps to idle when unclaimed past idle timeout)', () => {
+    const heartbeatMtimeMs = BASE - IDLE_TIMEOUT_MS - 1_000;
+    const legacyArgs = { now: BASE, heartbeatMtimeMs, containerState: null, claims: [] };
+    expect(decideStuckAction(legacyArgs).action).toBe('kill-ceiling');
+    expect(decideStuckActionV2({ ...legacyArgs, aliveMtimeMs: FRESH }).action).toBe('kill-idle');
+  });
+
+  it('V2 kills wherever legacy kill-claim fires (same claim-stuck branch)', () => {
+    const legacyArgs = {
+      now: BASE,
+      heartbeatMtimeMs: BASE - 5 * 60 * 1000,
+      containerState: null,
+      claims: [claim('m', CLAIM_STUCK_MS + 5_000)],
+    };
+    expect(decideStuckAction(legacyArgs).action).toBe('kill-claim');
+    expect(decideStuckActionV2({ ...legacyArgs, aliveMtimeMs: FRESH }).action).toBe('kill-claim');
   });
 });
 

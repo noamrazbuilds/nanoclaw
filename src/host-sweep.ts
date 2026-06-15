@@ -43,7 +43,7 @@ import {
   type ContainerState,
 } from './db/session-db.js';
 import { log } from './log.js';
-import { openInboundDb, openOutboundDb, openOutboundDbRw, inboundDbPath, heartbeatPath } from './session-manager.js';
+import { openInboundDb, openOutboundDb, openOutboundDbRw, inboundDbPath, heartbeatPath, alivePath } from './session-manager.js';
 import { isContainerRunning, killContainer, wakeContainer } from './container-runner.js';
 import type { Session } from './types.js';
 
@@ -87,10 +87,42 @@ export const CLAIM_STUCK_MS = 60 * 1000;
 const MAX_TRIES = 5;
 const BACKOFF_BASE_MS = 5000;
 
+// ── Two-signal liveness (decideStuckActionV2) ──
+// Generic env-resolver for a positive-ms tunable with a hard floor (so a
+// fat-fingered tiny value can't turn the sweep into a kill-everything loop).
+function resolvePositiveMsEnv(name: string, def: number, floorMs: number): number {
+  const raw = process.env[name];
+  const parsed = raw ? Number(raw) : NaN;
+  if (Number.isFinite(parsed) && parsed >= floorMs) return parsed;
+  return def;
+}
+// Signal 1 (.alive) staleness past which the container's EVENT LOOP is frozen
+// → kill (process-dead). Distinct from the SDK-progress ceiling. Default 5 min;
+// floor 60s (= one sweep tick) so detection granularity stays meaningful.
+export const PROCESS_DEAD_MS = resolvePositiveMsEnv('NANOCLAW_PROCESS_DEAD_MS', 5 * 60 * 1000, 60 * 1000);
+// Idle reclaim: an UNCLAIMED container whose last SDK event (.heartbeat) is older
+// than this is killed (re-spawns on next inbound). Keeps containers warm modestly
+// longer than the legacy ceiling without much extra memory on this host. Default
+// 90 min (user-chosen); floor 5 min. Tune via NANOCLAW_IDLE_TIMEOUT_MS.
+export const IDLE_TIMEOUT_MS = resolvePositiveMsEnv('NANOCLAW_IDLE_TIMEOUT_MS', 90 * 60 * 1000, 5 * 60 * 1000);
+
+// Shadow-migration mode. legacy: only decideStuckAction acts. shadow: legacy
+// ACTS, decideStuckActionV2 is computed + logged for comparison. active: V2 acts,
+// legacy logged as the shadow side. Default legacy.
+export type LivenessMode = 'legacy' | 'shadow' | 'active';
+export function resolveLivenessMode(): LivenessMode {
+  const m = process.env.NANOCLAW_LIVENESS_MODE;
+  return m === 'shadow' || m === 'active' ? m : 'legacy';
+}
+export const LIVENESS_MODE: LivenessMode = resolveLivenessMode();
+
 export type StuckDecision =
   | { action: 'ok' }
   | { action: 'kill-ceiling'; heartbeatAgeMs: number; ceilingMs: number }
-  | { action: 'kill-claim'; messageId: string; claimAgeMs: number; toleranceMs: number };
+  | { action: 'kill-claim'; messageId: string; claimAgeMs: number; toleranceMs: number }
+  | { action: 'kill-process-dead'; aliveAgeMs: number; thresholdMs: number }
+  | { action: 'kill-sdk-hung'; heartbeatAgeMs: number; ceilingMs: number }
+  | { action: 'kill-idle'; heartbeatAgeMs: number; thresholdMs: number };
 
 /**
  * Pure decision for whether a running container should be killed this sweep
@@ -130,6 +162,81 @@ export function decideStuckAction(args: {
     if (claimAge <= tolerance) continue;
     if (heartbeatMtimeMs > claimedAt) continue;
     return { action: 'kill-claim', messageId: claim.message_id, claimAgeMs: claimAge, toleranceMs: tolerance };
+  }
+
+  return { action: 'ok' };
+}
+
+/**
+ * Two-signal stuck decision (the v2 liveness design). Signal 1 (.alive,
+ * `aliveMtimeMs`) proves the event loop runs; Signal 2 (.heartbeat,
+ * `heartbeatMtimeMs`) proves SDK progress. Pure + deterministic; FS/DB reads
+ * happen in the caller. Branch ORDER is load-bearing — see per-branch comments.
+ *
+ * vs legacy `decideStuckAction`: legacy kills on heartbeat-stale regardless of
+ * whether a task is active, which false-kills a long-running-but-healthy task
+ * (sparse parent events) and reaps idle containers at the ceiling. V2 separates
+ * "process frozen" (Signal 1, fast) from "SDK hung while a task is claimed"
+ * (Signal 2, gated on an active claim) from "idle too long" (Signal 2, no claim,
+ * generous), so a busy task is never killed for sparse events.
+ */
+export function decideStuckActionV2(args: {
+  now: number;
+  aliveMtimeMs: number; // 0 when .alive absent (fresh spawn — grace)
+  heartbeatMtimeMs: number; // 0 when .heartbeat absent (no SDK event yet)
+  containerState: ContainerState | null;
+  claims: Array<{ message_id: string; status_changed: string }>;
+}): StuckDecision {
+  const { now, aliveMtimeMs, heartbeatMtimeMs, containerState, claims } = args;
+  const declaredBashMs = bashTimeoutMs(containerState);
+  const hasActiveClaim = claims.length > 0;
+
+  // 1. process-dead — strongest signal, checked first so it wins over (and is
+  //    mutually exclusive with) the others. Event loop frozen: .alive exists but
+  //    is stale. Gated on aliveMtimeMs !== 0 so a fresh container (no .alive yet,
+  //    cleared on spawn) gets the same grace the heartbeat path gives. Applies
+  //    whether or not a task is claimed — a frozen loop is dead either way.
+  if (aliveMtimeMs !== 0) {
+    const aliveAge = now - aliveMtimeMs;
+    if (aliveAge > PROCESS_DEAD_MS) {
+      return { action: 'kill-process-dead', aliveAgeMs: aliveAge, thresholdMs: PROCESS_DEAD_MS };
+    }
+  }
+
+  // 2. sdk-hung — process is provably alive (didn't trip #1) but a CLAIMED task
+  //    has had no SDK event for the ceiling window. Gated on an active claim so
+  //    an idle-but-healthy container is NEVER killed for SDK-staleness (that's
+  //    idle-timeout's job, with a far more generous threshold). Honors a declared
+  //    long Bash timeout, same as the legacy ceiling.
+  const ceiling = Math.max(ABSOLUTE_CEILING_MS, declaredBashMs ?? 0);
+  if (hasActiveClaim && heartbeatMtimeMs !== 0) {
+    const hbAge = now - heartbeatMtimeMs;
+    if (hbAge > ceiling) {
+      return { action: 'kill-sdk-hung', heartbeatAgeMs: hbAge, ceilingMs: ceiling };
+    }
+  }
+
+  // 3. claim-stuck — UNCHANGED from legacy. Fast catch for "claimed but never
+  //    produced any heartbeat past tolerance" (heartbeatMtimeMs may be 0, or
+  //    <= the claim time). Narrower + faster than sdk-hung; complementary.
+  const tolerance = Math.max(CLAIM_STUCK_MS, declaredBashMs ?? 0);
+  for (const claim of claims) {
+    const claimedAt = parseSqliteUtc(claim.status_changed);
+    if (Number.isNaN(claimedAt)) continue;
+    const claimAge = now - claimedAt;
+    if (claimAge <= tolerance) continue;
+    if (heartbeatMtimeMs > claimedAt) continue;
+    return { action: 'kill-claim', messageId: claim.message_id, claimAgeMs: claimAge, toleranceMs: tolerance };
+  }
+
+  // 4. idle-timeout — no active claim; container did real work long ago and has
+  //    sat idle since. Reclaim it (re-spawns on next inbound). Only with a real
+  //    prior heartbeat (!== 0) so a never-worked fresh container isn't reaped.
+  if (!hasActiveClaim && heartbeatMtimeMs !== 0) {
+    const hbAge = now - heartbeatMtimeMs;
+    if (hbAge > IDLE_TIMEOUT_MS) {
+      return { action: 'kill-idle', heartbeatAgeMs: hbAge, thresholdMs: IDLE_TIMEOUT_MS };
+    }
   }
 
   return { action: 'ok' };
@@ -316,6 +423,15 @@ function heartbeatMtimeMs(agentGroupId: string, sessionId: string): number {
   }
 }
 
+/** mtime of the process-liveness file (.alive), or 0 when absent. Signal 1. */
+function aliveMtimeMs(agentGroupId: string, sessionId: string): number {
+  try {
+    return fs.statSync(alivePath(agentGroupId, sessionId)).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
 function bashTimeoutMs(state: ContainerState | null): number | null {
   if (!state || state.current_tool !== 'Bash') return null;
   return typeof state.tool_declared_timeout_ms === 'number' ? state.tool_declared_timeout_ms : null;
@@ -327,34 +443,62 @@ function enforceRunningContainerSla(
   session: Session,
   agentGroupId: string,
 ): void {
-  const decision = decideStuckAction({
-    now: Date.now(),
-    heartbeatMtimeMs: heartbeatMtimeMs(agentGroupId, session.id),
-    containerState: getContainerState(outDb),
-    claims: getProcessingClaims(outDb),
-  });
+  const now = Date.now();
+  const containerState = getContainerState(outDb);
+  const claims = getProcessingClaims(outDb);
+  const hbMs = heartbeatMtimeMs(agentGroupId, session.id);
+  const alMs = aliveMtimeMs(agentGroupId, session.id);
 
-  if (decision.action === 'ok') return;
+  // Always compute both. In legacy mode V2 is computed but neither logged nor
+  // acted on — cheap, pure, and lets the active/shadow paths share one read.
+  const legacy = decideStuckAction({ now, heartbeatMtimeMs: hbMs, containerState, claims });
+  const v2 = decideStuckActionV2({ now, aliveMtimeMs: alMs, heartbeatMtimeMs: hbMs, containerState, claims });
 
-  if (decision.action === 'kill-ceiling') {
-    log.warn('Killing container past absolute ceiling', {
+  // Shadow comparison — the load-bearing migration signal. Emit whenever EITHER
+  // decision wants a kill (skip the all-`ok` common case to avoid log spam).
+  // Grep for legacyAction!=ok && v2Action=ok (V2 missed a real kill — must not
+  // happen) and for v2 killing a long task that legacy let run (false positive).
+  if (LIVENESS_MODE !== 'legacy' && (legacy.action !== 'ok' || v2.action !== 'ok')) {
+    log.info('liveness-shadow', {
       sessionId: session.id,
-      heartbeatAgeMs: decision.heartbeatAgeMs,
-      ceilingMs: decision.ceilingMs,
+      mode: LIVENESS_MODE,
+      legacyAction: legacy.action,
+      v2Action: v2.action,
+      agree: legacy.action !== 'ok' && v2.action !== 'ok',
+      aliveAgeMs: alMs ? now - alMs : null,
+      heartbeatAgeMs: hbMs ? now - hbMs : null,
+      hasActiveClaim: claims.length > 0,
+      declaredBashMs: bashTimeoutMs(containerState),
     });
-    killContainer(session.id, 'absolute-ceiling');
-    resetStuckProcessingRows(inDb, outDb, session, 'absolute-ceiling');
-    return;
   }
 
-  log.warn('Killing container — message claimed then silent', {
-    sessionId: session.id,
-    messageId: decision.messageId,
-    claimAgeMs: decision.claimAgeMs,
-    toleranceMs: decision.toleranceMs,
-  });
-  killContainer(session.id, 'claim-stuck');
-  resetStuckProcessingRows(inDb, outDb, session, 'claim-stuck');
+  const acting = LIVENESS_MODE === 'active' ? v2 : legacy;
+  if (acting.action === 'ok') return;
+
+  // Shared kill+reset — same path for every reason, preserving the orphan-claim
+  // reset (resetStuckProcessingRows) that prevents the 2026-04-30 SIGKILL loop.
+  const act = (reason: string, fields: Record<string, unknown>): void => {
+    log.warn('Killing container', { sessionId: session.id, reason, ...fields });
+    killContainer(session.id, reason);
+    resetStuckProcessingRows(inDb, outDb, session, reason);
+  };
+
+  switch (acting.action) {
+    case 'kill-ceiling':
+      return act('absolute-ceiling', { heartbeatAgeMs: acting.heartbeatAgeMs, ceilingMs: acting.ceilingMs });
+    case 'kill-claim':
+      return act('claim-stuck', {
+        messageId: acting.messageId,
+        claimAgeMs: acting.claimAgeMs,
+        toleranceMs: acting.toleranceMs,
+      });
+    case 'kill-process-dead':
+      return act('process-dead', { aliveAgeMs: acting.aliveAgeMs, thresholdMs: acting.thresholdMs });
+    case 'kill-sdk-hung':
+      return act('sdk-hung', { heartbeatAgeMs: acting.heartbeatAgeMs, ceilingMs: acting.ceilingMs });
+    case 'kill-idle':
+      return act('idle-timeout', { heartbeatAgeMs: acting.heartbeatAgeMs, thresholdMs: acting.thresholdMs });
+  }
 }
 
 export function _resetStuckProcessingRowsForTesting(

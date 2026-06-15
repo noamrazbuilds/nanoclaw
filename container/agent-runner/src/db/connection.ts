@@ -23,10 +23,12 @@ import fs from 'fs';
 const DEFAULT_INBOUND_PATH = '/workspace/inbound.db';
 const DEFAULT_OUTBOUND_PATH = '/workspace/outbound.db';
 const DEFAULT_HEARTBEAT_PATH = '/workspace/.heartbeat';
+const DEFAULT_ALIVE_PATH = '/workspace/.alive';
 
 let _inbound: Database | null = null;
 let _outbound: Database | null = null;
 let _heartbeatPath: string = DEFAULT_HEARTBEAT_PATH;
+let _alivePath: string = DEFAULT_ALIVE_PATH;
 let _testMode = false;
 
 /**
@@ -222,6 +224,29 @@ export function getToolCallsSince(since: string): Array<{ tool: string; status: 
  */
 export function touchHeartbeat(): void {
   const p = _heartbeatPath;
+  const now = new Date();
+  try {
+    fs.utimesSync(p, now, now);
+  } catch {
+    try {
+      fs.writeFileSync(p, '');
+    } catch {
+      // Silently ignore — parent dir may not exist (e.g., in-memory test DBs)
+    }
+  }
+}
+
+/**
+ * Touch the process-liveness file — proves the event loop is running,
+ * INDEPENDENT of SDK stream progress. Touched by the outer poll loop AND the
+ * inner active-query poller (setInterval), so it stays fresh even when the SDK
+ * is mid-call and emitting no events. The host reaper compares this file's mtime
+ * against .heartbeat (SDK-progress) to tell "process frozen" from "SDK hung".
+ * Mirrors touchHeartbeat — a failed touch leaves the file stale, which fails
+ * safe toward a kill, never toward a missed kill.
+ */
+export function touchAlive(): void {
+  const p = _alivePath;
   const now = new Date();
   try {
     fs.utimesSync(p, now, now);

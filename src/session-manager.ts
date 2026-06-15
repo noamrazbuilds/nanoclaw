@@ -73,6 +73,16 @@ export function heartbeatPath(agentGroupId: string, sessionId: string): string {
 }
 
 /**
+ * Path to the container process-liveness file. Touched independently of SDK
+ * progress (every poll-loop tick + the inner active-query poller), so the host
+ * reaper can distinguish a frozen event loop (this file stale) from a hung SDK
+ * call (this fresh, but .heartbeat stale). See host-sweep decideStuckActionV2.
+ */
+export function alivePath(agentGroupId: string, sessionId: string): string {
+  return path.join(sessionDir(agentGroupId, sessionId), '.alive');
+}
+
+/**
  * @deprecated Use inboundDbPath / outboundDbPath instead.
  * Kept temporarily for test compatibility during migration.
  */
