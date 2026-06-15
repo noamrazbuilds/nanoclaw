@@ -34,6 +34,7 @@ SESSIONS_DIR = ROOT / "data" / "v2-sessions"
 STATE_PATH = ROOT / "data" / ".tool-health-state.json"
 ENV_FILE = ROOT / ".env"
 ERROR_LOG = ROOT / "logs" / "nanoclaw.error.log"
+GWS_AUDIT_LOG = ROOT / "data" / "gws-audit.jsonl"
 
 # A permanently-dropped user-facing message currently leaves ONLY this error-log
 # line (delivery.ts give-up branch) — no alert, agent thinks it sent. This marker
@@ -57,8 +58,13 @@ FAIL_THRESHOLD = 0.40   # flag a tool failing ≥40% of the time
 # broken integration. Counting them produced false "50% failed" alerts (2026-06-13).
 # Actual message-DELIVERY health is covered separately below by the
 # "Message delivery failed permanently" error-log scan (scan_delivery_failures).
+# NOTE: gws_run is deliberately NOT here. Counting raw gws success/failure from
+# the tool_calls ledger conflated agent CLI-syntax fumbling (wrong flag, exporting
+# a non-native file, dotted subcommand) with real integration breakage — that's
+# what produced the false "gws_run 43% failed" page on 2026-06-15. gws is instead
+# judged on its host-proxy audit log, counting only errorClass=='integration'
+# (auth/quota/Google-backend/proxy). See scan_gws_integration() below.
 WATCH = [
-    "gws_run",        # → host gws proxy → Google Workspace
     "remarkable_",    # → host reMarkable bridge → reMarkable cloud
     "anylist",        # → AnyList MCP → AnyList service
     "generate_image", # → LiteLLM → image API
@@ -107,6 +113,43 @@ def scan(window_hours: int) -> dict[str, dict]:
             if status == "failure":
                 a["fails"] += 1
     return agg
+
+
+def scan_gws_integration(window_hours: int) -> dict | None:
+    """Judge gws health from the host-proxy audit log, NOT the tool_calls ledger.
+    Counts only errorClass=='integration' as a failure so agent CLI-syntax errors
+    (errorClass=='client') don't trip the alarm. Returns {total, fails} over the
+    window, or None if there's no audit log / no exec entries yet.
+
+    Entries written before the errorClass field existed lack it; those are treated
+    as non-failures (errorClass absent → not integration) so the transition can't
+    retroactively alarm on old rows."""
+    if not GWS_AUDIT_LOG.exists():
+        return None
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=window_hours)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    total = 0
+    fails = 0
+    try:
+        with open(GWS_AUDIT_LOG, "r", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                if e.get("event") != "exec" or e.get("ts", "") < cutoff:
+                    continue
+                total += 1
+                if e.get("errorClass") == "integration":
+                    fails += 1
+    except Exception as ex:
+        print(f"tool_health: gws audit scan failed: {ex}", file=sys.stderr)
+        return None
+    if total == 0:
+        return None
+    return {"total": total, "fails": fails}
 
 
 def flagged(agg: dict[str, dict]) -> dict[str, dict]:
@@ -166,6 +209,9 @@ def main() -> None:
     args = ap.parse_args()
 
     agg = scan(args.hours)
+    gws = scan_gws_integration(args.hours)
+    if gws:
+        agg["gws_run"] = gws
     now_flagged = flagged(agg)
 
     # Load prior state once (flagged set + error-log read offset).

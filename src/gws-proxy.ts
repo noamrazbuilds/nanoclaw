@@ -155,6 +155,80 @@ function runGws(args: string[]): Promise<GwsResult> {
   });
 }
 
+// Classify a gws result so the health monitor can tell a BROKEN INTEGRATION
+// (auth/quota/Google-backend/proxy — should alert) from a CLIENT error (the
+// agent guessed a wrong flag, exported a non-native file, bad range — normal
+// trial-and-error, should NOT alert). The 2026-06-15 "gws_run 43% failed" alarm
+// was entirely client-class: `--fileId` vs `--params`, `export` of a CSV, dotted
+// `spreadsheets.values`. gws emits Google API errors as `{"error":{code,reason}}`
+// on stdout (often with exitCode 0!) and CLI usage errors on stderr (exitCode≠0).
+const CLIENT_REASONS = new Set([
+  'validationError',
+  'fileNotExportable',
+  'invalid',
+  'invalidArgument',
+  'badRequest',
+  'notFound',
+  'parseError',
+  'required',
+  'invalidParameter',
+  'notExportable',
+  'cannotDownloadFile',
+]);
+const INTEGRATION_REASONS = new Set([
+  'authError',
+  'unauthorized',
+  'insufficientPermissions',
+  'forbidden',
+  'backendError',
+  'internalError',
+  'rateLimitExceeded',
+  'userRateLimitExceeded',
+  'quotaExceeded',
+  'dailyLimitExceeded',
+  'sslRequired',
+  'conditionNotMet',
+]);
+
+export function classifyGwsError(result: GwsResult): {
+  errorClass: 'none' | 'client' | 'integration';
+  errorCode?: number;
+  errorReason?: string;
+} {
+  let errorCode: number | undefined;
+  let errorReason: string | undefined;
+  // Pull the first {"error":{...}} object out of stdout (gws JSON output).
+  const m = result.stdout.match(/"error"\s*:\s*\{[^}]*\}/);
+  if (m) {
+    try {
+      const obj = JSON.parse(`{${m[0]}}`) as { error?: { code?: number; reason?: string } };
+      errorCode = obj.error?.code;
+      errorReason = obj.error?.reason;
+    } catch {
+      /* leave undefined */
+    }
+  }
+
+  // CLI argument/usage errors (clap) — the dominant agent-fumble mode.
+  const combined = `${result.stdout}\n${result.stderr}`;
+  if (/unexpected argument|For more information, try|a similar argument exists|error:\s.*--help/i.test(combined)) {
+    return { errorClass: 'client', errorCode, errorReason };
+  }
+
+  if (errorReason && CLIENT_REASONS.has(errorReason)) return { errorClass: 'client', errorCode, errorReason };
+  if (errorReason && INTEGRATION_REASONS.has(errorReason)) return { errorClass: 'integration', errorCode, errorReason };
+  if (typeof errorCode === 'number') {
+    if (errorCode === 401 || errorCode === 429 || errorCode >= 500)
+      return { errorClass: 'integration', errorCode, errorReason };
+    if (errorCode === 400 || errorCode === 404 || errorCode === 403)
+      return { errorClass: 'client', errorCode, errorReason };
+  }
+  if (result.exitCode === 0) return { errorClass: 'none' };
+  // exitCode≠0 with no recognizable Google error and no usage marker → likely a
+  // real failure (timeout, crash, proxy/network). Surface it.
+  return { errorClass: 'integration', errorCode, errorReason };
+}
+
 function audit(entry: Record<string, unknown>): void {
   try {
     fs.appendFileSync(AUDIT_LOG, JSON.stringify(entry) + '\n');
@@ -220,6 +294,7 @@ export function startGwsProxy(): void {
 
         const kind = classify(argv);
         const result = await runGwsSerialized(argv);
+        const errInfo = classifyGwsError(result);
         audit({
           ts: new Date().toISOString(),
           event: 'exec',
@@ -227,6 +302,11 @@ export function startGwsProxy(): void {
           args: argv,
           exitCode: result.exitCode,
           durationMs: result.durationMs,
+          // errorClass lets the health monitor (scripts/tool_health.py) count only
+          // genuine integration failures and ignore agent CLI-syntax fumbling.
+          errorClass: errInfo.errorClass,
+          errorCode: errInfo.errorCode ?? null,
+          errorReason: errInfo.errorReason ?? null,
           ip: req.socket.remoteAddress,
           meta_untrusted: parsed.meta ?? null, // container-supplied; not host-verified
         });
