@@ -209,11 +209,18 @@ function createPreCompactHook(assistantName?: string): HookCallback {
 const CLAUDE_CODE_AUTO_COMPACT_WINDOW = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || '165000';
 
 /**
- * Stale-session detection. Matches Claude Code's error text when a
- * resumed session can't be found — missing transcript .jsonl, unknown
- * session ID, etc.
+ * Stale/corrupt-session detection. Matches Claude Code's error text when a
+ * resumed session can't be found — missing transcript .jsonl, unknown session
+ * ID, etc. — AND the corrupt-continuation 400 that a cross-provider transcript
+ * triggers: when a credit-fallback turn ran on Gemini (via LiteLLM) and its
+ * continuation got resumed by Claude, the Anthropic API rejects the foreign
+ * tool_use IDs with `tool_use.id: String should match pattern '^[a-zA-Z0-9_-]+$'`
+ * (a 400). Treating it as an invalid session clears the poisoned continuation so
+ * the next attempt starts fresh (poll-loop self-heal), instead of failing every
+ * turn forever. Both signatures mean "the stored continuation is unusable".
  */
-const STALE_SESSION_RE = /no conversation found|ENOENT.*\.jsonl|session.*not found/i;
+const STALE_SESSION_RE =
+  /no conversation found|ENOENT.*\.jsonl|session.*not found|tool_use[._]id.*should match pattern/i;
 
 export class ClaudeProvider implements AgentProvider {
   readonly supportsNativeSlashCommands = true;

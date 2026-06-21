@@ -193,6 +193,57 @@ export function resolveSession(
 }
 
 /**
+ * Host-sweep drift rotation for sessions the router never re-resolves.
+ *
+ * `reusableSession`'s 24h/skills rotation only fires inside `resolveSession`,
+ * which runs on an INBOUND routed message. A session that only ever runs
+ * scheduled tasks (woken directly by the host sweep) never goes through
+ * resolveSession, so it never rotates — observed 2026-06-21: a session 6 days
+ * old, accumulating stale instruction surface and (until self-heal) a poisoned
+ * continuation that couldn't clear via rotation.
+ *
+ * Called from the sweep for an IDLE session (no running container — the caller
+ * guards this; rotating a session mid-task would strand the in-flight turn).
+ * Returns the fresh successor when it rotated, or null when the session is still
+ * reusable. Ordering is race-safe vs. a concurrent resolveSession: create the
+ * successor (active) FIRST, carry tasks forward, THEN close the predecessor — so
+ * a concurrent `findSessionForAgent` (now ORDER BY created_at DESC) always sees
+ * the newest active session and never a zero-active gap.
+ */
+export function rotateStaleSessionIfNeeded(existing: Session): Session | null {
+  const skillsHash = computeSkillsHash();
+  const ageMs = Date.now() - new Date(existing.created_at).getTime();
+  const stale = ageMs > MAX_SESSION_AGE_MS || existing.skills_hash !== skillsHash;
+  if (!stale) return null;
+
+  const id = generateId();
+  const successor: Session = {
+    id,
+    agent_group_id: existing.agent_group_id,
+    messaging_group_id: existing.messaging_group_id,
+    thread_id: existing.thread_id,
+    agent_provider: null,
+    status: 'active',
+    container_status: 'stopped',
+    last_active: null,
+    created_at: new Date().toISOString(),
+    skills_hash: skillsHash,
+  };
+  createSession(successor); // active first — no zero-active window
+  initSessionFolder(existing.agent_group_id, id);
+  carryForwardPendingTasks(existing, existing.agent_group_id, id);
+  updateSession(existing.id, { status: 'closed' }); // then retire the predecessor
+  log.info('Session rotated by host sweep (drift safeguard)', {
+    from: existing.id,
+    to: id,
+    agentGroupId: existing.agent_group_id,
+    reason: ageMs > MAX_SESSION_AGE_MS ? 'age' : 'skills_changed',
+    ageHours: Math.round(ageMs / 3_600_000),
+  });
+  return successor;
+}
+
+/**
  * C3 rotation orphan-fix.
  *
  * The drift safeguard (`reusableSession`) rotates a session every 24h (or on a

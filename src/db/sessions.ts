@@ -38,16 +38,19 @@ export function findSessionForAgent(
   messagingGroupId: string,
   threadId: string | null,
 ): Session | undefined {
+  // ORDER BY created_at DESC LIMIT 1: tolerate (briefly) >1 active session for
+  // the same routing — the host-sweep drift rotation creates the successor BEFORE
+  // closing the predecessor, so a concurrent resolve here must pick the NEWEST.
   if (threadId) {
     return getDb()
       .prepare(
-        "SELECT * FROM sessions WHERE agent_group_id = ? AND messaging_group_id = ? AND thread_id = ? AND status = 'active'",
+        "SELECT * FROM sessions WHERE agent_group_id = ? AND messaging_group_id = ? AND thread_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1",
       )
       .get(agentGroupId, messagingGroupId, threadId) as Session | undefined;
   }
   return getDb()
     .prepare(
-      "SELECT * FROM sessions WHERE agent_group_id = ? AND messaging_group_id = ? AND thread_id IS NULL AND status = 'active'",
+      "SELECT * FROM sessions WHERE agent_group_id = ? AND messaging_group_id = ? AND thread_id IS NULL AND status = 'active' ORDER BY created_at DESC LIMIT 1",
     )
     .get(agentGroupId, messagingGroupId) as Session | undefined;
 }

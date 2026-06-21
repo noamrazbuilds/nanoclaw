@@ -43,7 +43,15 @@ import {
   type ContainerState,
 } from './db/session-db.js';
 import { log } from './log.js';
-import { openInboundDb, openOutboundDb, openOutboundDbRw, inboundDbPath, heartbeatPath, alivePath } from './session-manager.js';
+import {
+  openInboundDb,
+  openOutboundDb,
+  openOutboundDbRw,
+  inboundDbPath,
+  heartbeatPath,
+  alivePath,
+  rotateStaleSessionIfNeeded,
+} from './session-manager.js';
 import { isContainerRunning, killContainer, wakeContainer } from './container-runner.js';
 import type { Session } from './types.js';
 
@@ -337,6 +345,17 @@ export function drainAgentEvents(
 async function sweepSession(session: Session): Promise<void> {
   const agentGroup = getAgentGroup(session.agent_group_id);
   if (!agentGroup) return;
+
+  // C3 drift safeguard for task-only sessions. resolveSession's 24h/skills
+  // rotation never fires for a session that only ever runs scheduled tasks (the
+  // router never re-resolves it). Rotate here too, but ONLY when idle — rotating
+  // a session with a running container would strand its in-flight turn. On
+  // rotation, pending tasks are carried to the successor; skip this tick (the
+  // successor is swept next tick).
+  if (!isContainerRunning(session.id)) {
+    const rotated = rotateStaleSessionIfNeeded(session);
+    if (rotated) return;
+  }
 
   const inPath = inboundDbPath(agentGroup.id, session.id);
   if (!fs.existsSync(inPath)) return;

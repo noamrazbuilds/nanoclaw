@@ -182,7 +182,13 @@ describe('decideStuckActionV2', () => {
   // ── 1. process-dead ──
   it('kills process-dead when .alive is stale (with no claim)', () => {
     const aliveMtimeMs = BASE - PROCESS_DEAD_MS - 1_000;
-    const res = decideStuckActionV2({ now: BASE, aliveMtimeMs, heartbeatMtimeMs: FRESH, containerState: null, claims: [] });
+    const res = decideStuckActionV2({
+      now: BASE,
+      aliveMtimeMs,
+      heartbeatMtimeMs: FRESH,
+      containerState: null,
+      claims: [],
+    });
     expect(res.action).toBe('kill-process-dead');
     if (res.action !== 'kill-process-dead') return;
     expect(res.thresholdMs).toBe(PROCESS_DEAD_MS);
@@ -212,12 +218,24 @@ describe('decideStuckActionV2', () => {
   });
 
   it('fresh-spawn grace: aliveMtimeMs=0 never trips process-dead', () => {
-    const res = decideStuckActionV2({ now: BASE, aliveMtimeMs: 0, heartbeatMtimeMs: FRESH, containerState: null, claims: [] });
+    const res = decideStuckActionV2({
+      now: BASE,
+      aliveMtimeMs: 0,
+      heartbeatMtimeMs: FRESH,
+      containerState: null,
+      claims: [],
+    });
     expect(res.action).toBe('ok');
   });
 
   it('does not kill process-dead when .alive is fresh', () => {
-    const res = decideStuckActionV2({ now: BASE, aliveMtimeMs: FRESH, heartbeatMtimeMs: FRESH, containerState: null, claims: [] });
+    const res = decideStuckActionV2({
+      now: BASE,
+      aliveMtimeMs: FRESH,
+      heartbeatMtimeMs: FRESH,
+      containerState: null,
+      claims: [],
+    });
     expect(res.action).toBe('ok');
   });
 
@@ -310,7 +328,13 @@ describe('decideStuckActionV2', () => {
   });
 
   it('never reaps a never-worked fresh container via idle (heartbeatMtimeMs=0, no claim)', () => {
-    const res = decideStuckActionV2({ now: BASE, aliveMtimeMs: FRESH, heartbeatMtimeMs: 0, containerState: null, claims: [] });
+    const res = decideStuckActionV2({
+      now: BASE,
+      aliveMtimeMs: FRESH,
+      heartbeatMtimeMs: 0,
+      containerState: null,
+      claims: [],
+    });
     expect(res.action).toBe('ok');
   });
 

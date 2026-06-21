@@ -221,12 +221,20 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     try {
       let result = await processQuery(query, routing, processingIds, config.providerName, requiredTools, turnStart, taskName, isTaskTurn);
 
+      // Tracks whether this turn's final result came from the credit-fallback
+      // model (Gemini via LiteLLM). If so its continuation is a FOREIGN-provider
+      // transcript and must NOT be persisted under the primary provider's slot —
+      // resuming it next turn poisons the session (the primary API 400s on the
+      // foreign tool_use IDs). See the persist block below.
+      let usedFallback = false;
+
       // C1: one-shot credit-error fallback. processQuery suppressed the raw
       // credit error; if a fallback model is configured, notify the user and
       // re-run the SAME request once on the fallback model in a FRESH session
       // (no continuation — resuming would bounce back to the same Anthropic
       // model). Capped at one retry: a second credit error is not retried.
       if (result.creditError && FALLBACK_READY) {
+        usedFallback = true;
         log(`Credit exhaustion — retrying once on fallback model via LiteLLM: ${FALLBACK_MODEL}`);
         notifyCreditFallback(keep, routing);
         result = await processQuery(
@@ -252,7 +260,16 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         });
       }
 
-      if (result.continuation && result.continuation !== continuation) {
+      if (usedFallback) {
+        // The fallback ran on a foreign provider (Gemini via LiteLLM). Its
+        // continuation is not a valid primary-provider (Claude) session — never
+        // persist it under the claude slot. Clear so the NEXT turn starts a fresh
+        // Claude session instead of resuming a Gemini transcript (which 400s on
+        // the foreign tool_use IDs — the 2026-06-15→21 poisoning). One turn of
+        // lost continuity is the correct trade vs. a permanently-broken session.
+        if (continuation !== undefined) clearContinuation(config.providerName);
+        continuation = undefined;
+      } else if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
         setContinuation(config.providerName, continuation);
       }
@@ -283,10 +300,12 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
             taskName,
             isTaskTurn,
           );
-          if (fb.continuation) {
-            continuation = fb.continuation;
-            setContinuation(config.providerName, continuation);
-          }
+          // Fallback ran on a foreign provider — do NOT persist its continuation
+          // under the claude slot (poisons the next turn). Clear so next turn is
+          // a fresh Claude session. (Mirrors the success-path usedFallback guard.)
+          void fb;
+          continuation = undefined;
+          clearContinuation(config.providerName);
         } catch (err2) {
           const m2 = err2 instanceof Error ? err2.message : String(err2);
           log(`Fallback query error: ${m2}`);
@@ -317,15 +336,55 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
             content: JSON.stringify({ text: POLICY_REFUSAL_NOTICE }),
           });
         }
-      } else {
-        // Stale/corrupt continuation recovery: ask the provider whether this
-        // error means the stored continuation is unusable, and clear it so the
-        // next attempt starts fresh.
-        if (continuation && config.provider.isSessionInvalid(err)) {
-          log(`Stale session detected (${continuation}) — clearing for next retry`);
+      } else if (continuation && config.provider.isSessionInvalid(err)) {
+        // Stale/corrupt stored continuation (missing transcript, OR a poisoned
+        // cross-provider transcript whose foreign tool_use IDs the API rejects
+        // with a 400). Clear it and retry the SAME request ONCE in a fresh
+        // session on the PRIMARY model — this self-heals a poisoned session in
+        // the same turn instead of failing every turn until manual /clear or a
+        // 24h rotation (the 2026-06-15→21 incident: the session never rotated and
+        // never recovered). One-shot: a second failure surfaces.
+        log(`Corrupt/stale session (${continuation}) — clearing and retrying fresh once`);
+        continuation = undefined;
+        clearContinuation(config.providerName);
+        try {
+          const recovered = await processQuery(
+            config.provider.query({ prompt, continuation: undefined, cwd: config.cwd, systemContext: config.systemContext, model: taskModel }),
+            routing,
+            processingIds,
+            config.providerName,
+            requiredTools,
+            turnStart,
+            taskName,
+            isTaskTurn,
+          );
+          // Recovered — persist the fresh (primary-provider) continuation and do
+          // NOT surface the original raw error.
+          if (recovered.continuation) {
+            continuation = recovered.continuation;
+            setContinuation(config.providerName, continuation);
+          }
+        } catch (err3) {
+          const m3 = err3 instanceof Error ? err3.message : String(err3);
+          log(`Fresh retry after corrupt session also failed: ${m3}`);
+          // The retry's own init may have stored a fresh continuation before it
+          // failed mid-stream — clear it so the NEXT turn also starts clean
+          // rather than resuming a half-failed session.
           continuation = undefined;
           clearContinuation(config.providerName);
+          recordAgentEvent('error', 'query_error', m3);
+          if (!getSuppressChatOutput()) {
+            writeMessageOut({
+              id: generateId(),
+              kind: 'chat',
+              platform_id: routing.platformId,
+              channel_type: routing.channelType,
+              thread_id: routing.threadId,
+              content: JSON.stringify({ text: `Error: ${m3}` }),
+            });
+          }
         }
+      } else {
         // Write error response so the user knows something went wrong
         writeMessageOut({
           id: generateId(),
