@@ -153,6 +153,27 @@ function syncGroup(central: Database.Database, groupFolder: string, dir: string)
     return;
   }
 
+  // Orphan check (BOTH directions). The md->json direction is handled per-file in
+  // the loop below; this catches the reverse — a <slug>.json with NO <slug>.md.
+  // That asymmetry was a real blind spot: a task prompt (pka-inbox-review-afternoon.md)
+  // was silently deleted by an over-broad `git add -A` in a synced-vault consolidation
+  // commit, leaving an orphaned .json. Because sync only iterated .md files, the
+  // deletion produced no error — the task just kept running a stale DB prompt forever.
+  // Fail loudly so a vanished prompt surfaces on the very next sync instead of rotting.
+  const allFiles = fs.readdirSync(dir);
+  const mdSlugs = new Set(
+    allFiles.filter((f) => f.endsWith('.md') && f !== 'README.md').map((f) => f.slice(0, -3)),
+  );
+  for (const jsonFile of allFiles.filter((f) => f.endsWith('.json'))) {
+    const slug = jsonFile.slice(0, -5);
+    if (!mdSlugs.has(slug)) {
+      fail(
+        `${groupFolder}/${jsonFile} has no prompt ${slug}.md — the .md was likely deleted ` +
+          `(check git history / Syncthing). Restore it or remove the orphaned sidecar.`,
+      );
+    }
+  }
+
   // Pair up <slug>.md + <slug>.json
   const mdFiles = fs.readdirSync(dir).filter((f) => f.endsWith('.md') && f !== 'README.md');
   for (const md of mdFiles) {
