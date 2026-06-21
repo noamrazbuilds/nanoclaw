@@ -166,6 +166,17 @@ litellm_settings:
     - claude-sonnet-4-6: [gemini-2.5-flash, deepseek-v3.2, gpt-4o]
     - claude-opus-4-6: [gemini-2.5-pro, gpt-4o]
     - claude-haiku-4-5: [gemini-flash-lite, gpt-4o-mini]
+    # NanoClaw's credit-exhaustion fallback enters LiteLLM by requesting
+    # `gemini-2.5-flash` DIRECTLY (NANOCLAW_FALLBACK_MODEL), not via a Claude
+    # model name — so it bypassed the chains above. Without an onward chain here,
+    # a Gemini 429 (the daily-update's ~7 subagents blow Gemini's 1M-tok/min
+    # quota) dead-ended with "No fallback model group found" and dumped a raw
+    # error to chat (2026-06-15→21 outage). Give it an onward cross-provider
+    # chain so it degrades instead of dead-ending. DeepSeek first: during this
+    # outage gpt-4o was itself 429ing while DeepSeek was healthy, so lead with the
+    # proven-reliable provider; gpt-4o as a third option. Terminal (neither has an
+    # onward edge back to gemini in THIS request's chain, so no cycle).
+    - gemini-2.5-flash: [deepseek-v3.2, gpt-4o]
     # Arena bots: if non-Claude primary fails → fall back to gemini (not Anthropic,
     # since Anthropic credits may be depleted and would cascade the same error)
     - deepseek-v3.2: [gemini-2.5-flash]
