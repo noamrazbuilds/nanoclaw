@@ -64,4 +64,21 @@ describe('applyPreTaskScripts — script outbox', () => {
     expect(out.skipped).toEqual(['t4']);
     expect(getUndeliveredMessages()).toHaveLength(0);
   });
+
+  it('runs a PYTHON-shebang script with python3 (not bash)', async () => {
+    // Regression: a python-shebang script run via bash errors on `import` and the
+    // task is silently skipped. It must be run with python3.
+    const script = '#!/usr/bin/env python3\nimport json\nprint(json.dumps({"wakeAgent": False, "send": [{"text": "py ok"}]}))';
+    const out = await applyPreTaskScripts([taskRow('p1', script)]);
+    expect(out.skipped).toEqual(['p1']);
+    const delivered = getUndeliveredMessages();
+    expect(delivered).toHaveLength(1);
+    expect(JSON.parse(delivered[0].content).text).toBe('py ok');
+  });
+
+  it('still runs a shebang-less script with bash', async () => {
+    const out = await applyPreTaskScripts([taskRow('b1', `echo '{"wakeAgent": false, "send": [{"text": "bash ok"}]}'`)]);
+    expect(out.skipped).toEqual(['b1']);
+    expect(JSON.parse(getUndeliveredMessages()[0].content).text).toBe('bash ok');
+  });
 });

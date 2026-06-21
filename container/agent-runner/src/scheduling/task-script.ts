@@ -32,12 +32,20 @@ function log(msg: string): void {
 }
 
 export async function runScript(script: string, taskId: string): Promise<ScriptResult | null> {
-  const scriptPath = path.join('/tmp', `task-script-${taskId}.sh`);
+  // Pick the interpreter from the shebang. A Python-shebang script run through
+  // `bash` errors on its first `import` line (bash: "import: command not found"),
+  // produces no JSON on stdout, and the task is silently skipped — so a script
+  // MUST be run with the interpreter it was written for. Default to bash for
+  // shebang-less scripts (e.g. `python3 -c "..."` one-liners, plain shell).
+  const firstLine = script.slice(0, script.indexOf('\n') === -1 ? undefined : script.indexOf('\n'));
+  const isPython = /^#!.*\bpython/.test(firstLine);
+  const interpreter = isPython ? 'python3' : 'bash';
+  const scriptPath = path.join('/tmp', `task-script-${taskId}.${isPython ? 'py' : 'sh'}`);
   fs.writeFileSync(scriptPath, script, { mode: 0o755 });
 
   return new Promise((resolve) => {
     execFile(
-      'bash',
+      interpreter,
       [scriptPath],
       { timeout: SCRIPT_TIMEOUT_MS, maxBuffer: SCRIPT_MAX_BUFFER, env: process.env },
       (error, stdout, stderr) => {
