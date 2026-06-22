@@ -3,7 +3,14 @@ import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } 
 import { writeMessageOut } from './db/messages-out.js';
 import { getInboundDb, touchHeartbeat, touchAlive, clearStaleProcessingAcks, getToolCallsSince, recordAgentEvent } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
-import { clearCurrentInReplyTo, setCurrentInReplyTo, setSuppressChatOutput, getSuppressChatOutput } from './current-batch.js';
+import {
+  clearCurrentInReplyTo,
+  setCurrentInReplyTo,
+  setSuppressChatOutput,
+  getSuppressChatOutput,
+  resetMessagesDelivered,
+  getMessagesDelivered,
+} from './current-batch.js';
 import {
   formatMessages,
   extractRouting,
@@ -218,6 +225,9 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     setCurrentInReplyTo(routing.inReplyTo);
     // C4 part 3: suppress intermediate send_message for suppress_chat_output tasks.
     setSuppressChatOutput(batchSuppressesChat(keep));
+    // Reset the per-turn delivered-message counter (used below to drop a task's
+    // redundant final-turn echo once it has already sent via send_message).
+    resetMessagesDelivered();
     try {
       let result = await processQuery(query, routing, processingIds, config.providerName, requiredTools, turnStart, taskName, isTaskTurn);
 
@@ -802,6 +812,21 @@ async function processQuery(
             // dispatchResultText sends <message> bodies raw). The unwrapped-nudge
             // is also skipped: there is no destination to nudge toward.
             log(`Final result suppressed (suppress_chat_output task) — not dispatched to chat`);
+          } else if (isTaskTurn && getMessagesDelivered() > 0) {
+            // Durable double-message guard (replaces a prompt-only ask). On a
+            // SCHEDULED-TASK turn the agent typically does work, delivers the
+            // result via send_message, then ends its turn with a wrap-up line
+            // ("Triage sent. 5 items…", a re-stated briefing). That trailing
+            // assistant text would otherwise be dispatched as a SECOND chat
+            // message (the 2026-06-22 triage + briefing double-send). Since the
+            // task already delivered its content via the send tool this turn,
+            // treat the final text as scratchpad. Interactive (non-task) turns
+            // are unaffected; tasks that deliver ONLY via the final <message>
+            // block (no send_message) have count 0 and still dispatch normally.
+            log(
+              `Task turn already delivered ${getMessagesDelivered()} message(s) via send tool — ` +
+                `trailing result text treated as scratchpad (not dispatched), preventing a redundant second message`,
+            );
           } else {
             const { hasUnwrapped } = dispatchResultText(event.text, routing);
             if (hasUnwrapped && !unwrappedNudged) {

@@ -22,12 +22,14 @@ import { getOutboundDb } from './db/connection.js';
 
 const SUPPRESS_KEY = 'runtime:suppress_chat_output';
 const IN_REPLY_TO_KEY = 'runtime:in_reply_to';
+const DELIVERED_KEY = 'runtime:messages_delivered_turn';
 
 // In-process mirror — authoritative only within the writer (poll-loop) process;
 // the subprocess relies entirely on the DB-backed value. Used as a fallback when
 // the DB has no row yet or a read fails.
 let suppressChatOutput = false;
 let currentInReplyTo: string | null = null;
+let messagesDelivered = 0;
 
 function dbSet(key: string, value: string | null): void {
   try {
@@ -91,4 +93,35 @@ export function getSuppressChatOutput(): boolean {
   const v = dbGet(SUPPRESS_KEY);
   if (v !== undefined) return v === '1';
   return suppressChatOutput;
+}
+
+/**
+ * Per-turn counter of user-facing chat messages the agent has delivered via the
+ * MCP tools (send_message / send_file) this turn. DB-backed because those tools
+ * run in a SEPARATE subprocess (same cross-process reason as the suppress flag).
+ *
+ * Used by the poll-loop to kill a redundant SECOND message on SCHEDULED-TASK
+ * turns: a task that already delivered its result via send_message would
+ * otherwise ALSO get its final-turn assistant text dispatched (the agent's
+ * "Triage sent. 5 items…" / a re-stated briefing → the 2026-06-22 double-send).
+ * Reset at the start of each turn by the poll-loop.
+ */
+export function resetMessagesDelivered(): void {
+  messagesDelivered = 0;
+  dbSet(DELIVERED_KEY, '0');
+}
+
+export function incrementMessagesDelivered(): void {
+  const current = getMessagesDelivered();
+  messagesDelivered = current + 1;
+  dbSet(DELIVERED_KEY, String(messagesDelivered));
+}
+
+export function getMessagesDelivered(): number {
+  const v = dbGet(DELIVERED_KEY);
+  if (v !== undefined) {
+    const n = parseInt(v, 10);
+    if (!Number.isNaN(n)) return n;
+  }
+  return messagesDelivered;
 }
