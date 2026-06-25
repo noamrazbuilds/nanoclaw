@@ -15,6 +15,7 @@ const envConfig = readEnvFile([
   'OAUTH_PROXY_URL',
   'LITELLM_API_KEY',
   'DEFAULT_FALLBACK_MODEL',
+  'DEFAULT_FALLBACK_MODELS',
 ]);
 
 export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
@@ -30,10 +31,23 @@ export const OAUTH_PROXY_URL = process.env.OAUTH_PROXY_URL || envConfig.OAUTH_PR
 // directly on the host (http://localhost:4000); the key authenticates them.
 export const LITELLM_API_KEY = process.env.LITELLM_API_KEY || envConfig.LITELLM_API_KEY || '';
 
-// C1 credit-error fallback model. When set, the container re-runs a request once
-// on this model (reached via the in-container LiteLLM bridge) after Anthropic
-// credit exhaustion. Empty → no fallback attempted.
+// C1 credit-error fallback CHAIN. After Anthropic credit exhaustion the container
+// re-runs the request on each of these models in order (reached via the
+// in-container LiteLLM bridge) until one succeeds. Use DEFAULT_FALLBACK_MODELS
+// for a comma-separated chain (e.g. "gpt-4o,gemini-2.5-pro"); the singular
+// DEFAULT_FALLBACK_MODEL is still honored (and appended) for back-compat. Empty →
+// no fallback attempted. Models must be non-Anthropic (a different billing pool)
+// to actually bypass the exhausted Anthropic credits.
 export const DEFAULT_FALLBACK_MODEL = process.env.DEFAULT_FALLBACK_MODEL || envConfig.DEFAULT_FALLBACK_MODEL || '';
+const FALLBACK_MODELS_RAW = process.env.DEFAULT_FALLBACK_MODELS || envConfig.DEFAULT_FALLBACK_MODELS || '';
+// Resolved ordered chain: explicit list first, else the singular. De-duplicated, trimmed.
+export const DEFAULT_FALLBACK_MODELS = Array.from(
+  new Set(
+    [...FALLBACK_MODELS_RAW.split(','), DEFAULT_FALLBACK_MODEL]
+      .map((s) => s.trim())
+      .filter(Boolean),
+  ),
+).join(',');
 
 // Absolute paths needed for container mounts
 const PROJECT_ROOT = process.cwd();

@@ -238,17 +238,17 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       // foreign tool_use IDs). See the persist block below.
       let usedFallback = false;
 
-      // C1: one-shot credit-error fallback. processQuery suppressed the raw
-      // credit error; if a fallback model is configured, notify the user and
-      // re-run the SAME request once on the fallback model in a FRESH session
-      // (no continuation — resuming would bounce back to the same Anthropic
-      // model). Capped at one retry: a second credit error is not retried.
+      // C1: credit-error fallback CHAIN. processQuery suppressed the raw credit
+      // error; if fallback models are configured, notify the user and re-run the
+      // SAME request on each model in order in a FRESH session (no continuation —
+      // resuming would bounce back to the same Anthropic model), stopping at the
+      // first that succeeds.
       if (result.creditError && FALLBACK_READY) {
         usedFallback = true;
-        log(`Credit exhaustion — retrying once on fallback model via LiteLLM: ${FALLBACK_MODEL}`);
         notifyCreditFallback(keep, routing);
-        result = await processQuery(
-          config.provider.query({ prompt, continuation: undefined, cwd: config.cwd, systemContext: config.systemContext, model: FALLBACK_MODEL, envOverride: FALLBACK_ENV }),
+        result = await runFallbackChain(
+          (model) =>
+            config.provider.query({ prompt, continuation: undefined, cwd: config.cwd, systemContext: config.systemContext, model, envOverride: FALLBACK_ENV }),
           routing,
           processingIds,
           config.providerName,
@@ -257,9 +257,21 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
           taskName,
           isTaskTurn,
         );
-        if (result.creditError) log('Fallback model also reported a credit error — surfacing, no further retry');
+        if (result.creditError) {
+          log('All fallback models also reported a credit/limit error — surfacing');
+          if (!getSuppressChatOutput()) {
+            writeMessageOut({
+              id: generateId(),
+              kind: 'chat',
+              platform_id: routing.platformId,
+              channel_type: routing.channelType,
+              thread_id: routing.threadId,
+              content: JSON.stringify({ text: 'Error: Anthropic credits are exhausted and all configured fallback models also failed.' }),
+            });
+          }
+        }
       } else if (result.creditError) {
-        log('Credit exhaustion but no fallback configured (need NANOCLAW_FALLBACK_MODEL + LITELLM_HOST + LITELLM_API_KEY)');
+        log('Credit exhaustion but no fallback configured (need DEFAULT_FALLBACK_MODELS + LITELLM_HOST + LITELLM_API_KEY)');
         writeMessageOut({
           id: generateId(),
           kind: 'chat',
@@ -294,38 +306,36 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         errMsg,
       );
 
-      // C1: a thrown credit error gets the same one-shot fallback treatment as
-      // the in-stream path above.
+      // C1: a thrown credit error gets the same fallback-CHAIN treatment as the
+      // in-stream path above. runFallbackChain isolates each model's own errors,
+      // so it never throws here.
       if (isCreditError(errMsg) && FALLBACK_READY) {
-        log(`Credit exhaustion (thrown) — retrying once on fallback model via LiteLLM: ${FALLBACK_MODEL}`);
+        log('Credit exhaustion (thrown) — running fallback chain via LiteLLM');
         notifyCreditFallback(keep, routing);
-        try {
-          const fb = await processQuery(
-            config.provider.query({ prompt, continuation: undefined, cwd: config.cwd, systemContext: config.systemContext, model: FALLBACK_MODEL, envOverride: FALLBACK_ENV }),
-            routing,
-            processingIds,
-            config.providerName,
-            requiredTools,
-            turnStart,
-            taskName,
-            isTaskTurn,
-          );
-          // Fallback ran on a foreign provider — do NOT persist its continuation
-          // under the claude slot (poisons the next turn). Clear so next turn is
-          // a fresh Claude session. (Mirrors the success-path usedFallback guard.)
-          void fb;
-          continuation = undefined;
-          clearContinuation(config.providerName);
-        } catch (err2) {
-          const m2 = err2 instanceof Error ? err2.message : String(err2);
-          log(`Fallback query error: ${m2}`);
+        const fb = await runFallbackChain(
+          (model) =>
+            config.provider.query({ prompt, continuation: undefined, cwd: config.cwd, systemContext: config.systemContext, model, envOverride: FALLBACK_ENV }),
+          routing,
+          processingIds,
+          config.providerName,
+          requiredTools,
+          turnStart,
+          taskName,
+          isTaskTurn,
+        );
+        // Fallback ran on a foreign provider — do NOT persist its continuation
+        // under the claude slot (poisons the next turn). Clear so next turn is
+        // a fresh Claude session. (Mirrors the success-path usedFallback guard.)
+        continuation = undefined;
+        clearContinuation(config.providerName);
+        if (fb.creditError && !getSuppressChatOutput()) {
           writeMessageOut({
             id: generateId(),
             kind: 'chat',
             platform_id: routing.platformId,
             channel_type: routing.channelType,
             thread_id: routing.threadId,
-            content: JSON.stringify({ text: `Error: ${m2}` }),
+            content: JSON.stringify({ text: 'Error: Anthropic credits are exhausted and all configured fallback models also failed.' }),
           });
         }
       } else if (isPolicyRefusal(errMsg)) {
@@ -427,8 +437,8 @@ function notifyCreditFallback(batch: MessageInRow[], routing: RoutingContext): v
   const isScheduled = batch.some((m) => m.kind === 'task');
   if (isScheduled && batchSuppressesChat(batch)) return;
   const text = isScheduled
-    ? 'Anthropic credit balance ran dry mid-task. Re-running this scheduled task on Gemini.'
-    : "Hey man, Anthropic credit balance ran dry. No worries — I'm re-running that on Gemini. Should be right back.";
+    ? 'Anthropic credit balance ran dry mid-task. Re-running this scheduled task on a fallback model.'
+    : "Hey man, Anthropic credit balance ran dry. No worries — I'm re-running that on a fallback model. Should be right back.";
   writeMessageOut({
     id: generateId(),
     kind: 'chat',
@@ -572,8 +582,9 @@ interface QueryResult {
 }
 
 /**
- * C1: fallback model for the one-shot credit-error retry (NANOCLAW_FALLBACK_MODEL,
- * e.g. `gemini-2.5-flash`), passed in by the host when LiteLLM access is wired.
+ * C1: fallback model CHAIN for the credit-error retry (NANOCLAW_FALLBACK_MODELS,
+ * e.g. `gpt-4o,gemini-2.5-pro`), passed in by the host when LiteLLM access is
+ * wired. Tried in order until one succeeds.
  *
  * The normal request path reaches Anthropic via the OneCLI gateway
  * (api.anthropic.com); the fallback model is NOT reachable there. So on credit
@@ -582,7 +593,28 @@ interface QueryResult {
  * NO_PROXY, so this retry bypasses the OneCLI gateway cleanly. Both the model
  * AND the bridge creds must be present for the fallback to fire.
  */
-const FALLBACK_MODEL = process.env.NANOCLAW_FALLBACK_MODEL;
+/**
+ * Resolve the ordered, de-duplicated fallback chain from the two env forms.
+ * NANOCLAW_FALLBACK_MODELS (comma list) is the chain; the singular
+ * NANOCLAW_FALLBACK_MODEL is appended for back-compat (older host builds set
+ * only it). Exported for tests. Pure — takes the raw env values explicitly.
+ */
+export function resolveFallbackChain(modelsCsv?: string, singular?: string): string[] {
+  return Array.from(
+    new Set(
+      [...(modelsCsv || '').split(','), singular || '']
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+// Ordered fallback CHAIN: each model is tried in turn on credit exhaustion until
+// one succeeds.
+const FALLBACK_MODELS: string[] = resolveFallbackChain(
+  process.env.NANOCLAW_FALLBACK_MODELS,
+  process.env.NANOCLAW_FALLBACK_MODEL,
+);
 const FALLBACK_ENV: Record<string, string> | undefined =
   process.env.LITELLM_HOST && process.env.LITELLM_API_KEY
     ? {
@@ -592,7 +624,7 @@ const FALLBACK_ENV: Record<string, string> | undefined =
       }
     : undefined;
 /** True when a credit-error fallback can actually be attempted. */
-const FALLBACK_READY = Boolean(FALLBACK_MODEL && FALLBACK_ENV);
+const FALLBACK_READY = Boolean(FALLBACK_MODELS.length && FALLBACK_ENV);
 
 async function processQuery(
   query: AgentQuery,
@@ -850,6 +882,55 @@ async function processQuery(
   }
 
   return { continuation: queryContinuation, creditError };
+}
+
+/**
+ * C1 credit-error fallback CHAIN. After Anthropic credit exhaustion, re-run the
+ * SAME request on each configured fallback model in order (fresh session, no
+ * continuation, LiteLLM env overlay) until one completes WITHOUT another credit
+ * error. processQuery dispatches a successful result's text internally, so a
+ * clean run delivers the message as a side effect; this returns the last
+ * QueryResult so the caller can clear the (foreign-provider) continuation and
+ * detect total exhaustion. Each model is isolated in its own try/catch — a model
+ * that throws (bad LiteLLM route, etc.) is logged and the chain moves on.
+ */
+async function runFallbackChain(
+  buildQuery: (model: string) => AgentQuery,
+  routing: RoutingContext,
+  processingIds: string[],
+  providerName: string,
+  requiredTools: RequiredTool[],
+  turnStart: string | undefined,
+  taskName: string | undefined,
+  isTaskTurn: boolean,
+): Promise<QueryResult> {
+  let last: QueryResult = { creditError: true };
+  for (const model of FALLBACK_MODELS) {
+    log(`Credit fallback — attempting model via LiteLLM: ${model}`);
+    try {
+      last = await processQuery(
+        buildQuery(model),
+        routing,
+        processingIds,
+        providerName,
+        requiredTools,
+        turnStart,
+        taskName,
+        isTaskTurn,
+      );
+    } catch (e) {
+      log(`Fallback model ${model} threw: ${e instanceof Error ? e.message : String(e)} — trying next`);
+      last = { creditError: true };
+      continue;
+    }
+    if (!last.creditError) {
+      log(`Fallback model ${model} succeeded`);
+      return last;
+    }
+    log(`Fallback model ${model} also hit credit/limit — trying next`);
+  }
+  log(`All ${FALLBACK_MODELS.length} fallback model(s) exhausted`);
+  return last;
 }
 
 function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {

@@ -14,7 +14,7 @@ import {
   CONTAINER_IMAGE_BASE,
   CONTAINER_INSTALL_LABEL,
   DATA_DIR,
-  DEFAULT_FALLBACK_MODEL,
+  DEFAULT_FALLBACK_MODELS,
   GROUPS_DIR,
   LITELLM_API_KEY,
   ONECLI_API_KEY,
@@ -426,12 +426,16 @@ async function buildContainerArgs(
   // the proxy. Without these, those features fall back to sk-placeholder and 401.
   args.push('-e', `LITELLM_HOST=${process.env.LITELLM_HOST || 'http://host.docker.internal:4000'}`);
   if (LITELLM_API_KEY) args.push('-e', `LITELLM_API_KEY=${LITELLM_API_KEY}`);
-  // C1 credit-error fallback: the model the agent-runner re-runs once on after
-  // Anthropic credit exhaustion. The retry diverts the SDK to the LiteLLM bridge
-  // (LITELLM_HOST + LITELLM_API_KEY, already passed above); this just names the
-  // model. Only meaningful when LiteLLM access is configured.
-  if (DEFAULT_FALLBACK_MODEL && LITELLM_API_KEY) {
-    args.push('-e', `NANOCLAW_FALLBACK_MODEL=${DEFAULT_FALLBACK_MODEL}`);
+  // C1 credit-error fallback CHAIN: the ordered models the agent-runner re-runs
+  // on after Anthropic credit exhaustion, tried in sequence until one succeeds.
+  // The retry diverts the SDK to the LiteLLM bridge (LITELLM_HOST + LITELLM_API_KEY,
+  // already passed above); this just names the models. Only meaningful when LiteLLM
+  // access is configured. NANOCLAW_FALLBACK_MODELS is the comma-separated chain;
+  // NANOCLAW_FALLBACK_MODEL is still set to the first entry for back-compat with
+  // older agent-runner builds.
+  if (DEFAULT_FALLBACK_MODELS && LITELLM_API_KEY) {
+    args.push('-e', `NANOCLAW_FALLBACK_MODELS=${DEFAULT_FALLBACK_MODELS}`);
+    args.push('-e', `NANOCLAW_FALLBACK_MODEL=${DEFAULT_FALLBACK_MODELS.split(',')[0]}`);
   }
 
   // Internal host-bridge calls must BYPASS the OneCLI credential gateway. OneCLI
